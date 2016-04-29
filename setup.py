@@ -3,7 +3,7 @@ import os
 
 from setuptools import setup
 
-version = '0.1-development'
+version = '0.1.dev1'
 # TODO: use `git rev-parse --short HEAD` ?
 
 long_description = '''
