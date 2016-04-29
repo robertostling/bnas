@@ -14,61 +14,64 @@ class InitializationFunction:
 
 
 class Constant(InitializationFunction):
+    """Constant initialization.
+
+    All elements are initialized with the same constant value.
+
+    Parameters
+    ----------
+    a : float
+        Initialization constant.
+    """
+
     def __init__(self, a):
-        """Constant initialization.
-
-        All elements are initialized with the same constant value.
-
-        Parameters
-        ----------
-        a : float
-            Initialization constant.
-        """
         self.a = a
 
     def __call__(self, dims, dtype=theano.config.floatX):
-        return np.full(dims, a, dtype=dtype)
+        return np.full(dims, self.a, dtype=dtype)
 
 
 class Gaussian(InitializationFunction):
-    def __init__(self, mean=0.0, dev=0.01):
-        """Isotropic Gaussian initialization.
+    """Isotropic Gaussian initialization.
 
-        Elements are initialized independently from a Gaussian distribution
-        with a given mean and standard deviation.
+    Elements are initialized independently from a Gaussian distribution
+    with a given mean and standard deviation.
 
-        Parameters
-        ----------
-        mean : float
-            Mean of distribution (default: 0)
-        dev : float
-            Standard deviation of distribution (default: 0.01)
-        """
-        self.mean = mean
+    Parameters
+    ----------
+    dev : float
+        Standard deviation of distribution (default: 0.01)
+    mean : float
+        Mean of distribution (default: 0)
+    """
+
+    def __init__(self, dev=0.01, mean=0.0):
         self.dev = dev
+        self.mean = mean
 
     def __call__(self, dims, dtype=theano.config.floatX):
         m = np.random.standard_normal(dims)*self.dev + self.mean
-        return me.astype(dtype)
+        return m.astype(dtype)
 
 
 class Uniform(InitializationFunction):
-    def __init__(self, mean=0.0, scale=0.01):
-        """Uniform initialization.
+    """Uniform initialization.
 
-        Elements are initialized independently from a uniform distribution
-        with a given mean and scale (so the minimum value is `mean - scale/2`
-        and the maximum is `mean + scale/2`).
+    Elements are initialized independently from a uniform distribution
+    with a given mean and scale (so the minimum value is `mean - scale/2`
+    and the maximum is `mean + scale/2`).
 
-        Parameters
-        ----------
-        mean : float
-            Mean of distribution (default: 0)
-        scale : float
-            Scale of distribution (default: 0.01)
-        """
-        self.mean = mean
+    Parameters
+    ----------
+    scale : float
+        Scale of distribution (default: 0.01)
+    mean : float
+        Mean of distribution (default: 0)
+    """
+
+    def __init__(self, scale=0.01, mean=0.0):
         self.scale = scale
+        self.mean = mean
 
     def __call__(self, dims, dtype=theano.config.floatX):
         return np.random.uniform(
@@ -78,18 +81,19 @@ class Uniform(InitializationFunction):
 
 
 class Orthogonal(InitializationFunction):
+    """Orthogonal initalization.
+
+    Create an orthogonal matrix, i.e. where M x M.T == I.
+    Note that this can only be used with 2D matrixes, and typically with
+    square ones.
+
+    Parameters
+    ----------
+    scale : float
+        Scaling factor (default: 1.0)
+    """
+
     def __init__(self, scale=1.0):
-        """Orthogonal initalization.
-
-        Create an orthogonal matrix, i.e. where M x M.T == I.
-        Note that this can only be used with 2D matrixes, and typically with
-        square ones.
-
-        Parameters
-        ----------
-        scale : float
-            Scaling factor (default: 1.0)
-        """
         self.scale = scale
 
     def __call__(self, dims, dtype=theano.config.floatX):
@@ -114,16 +118,17 @@ class Orthogonal(InitializationFunction):
 
 
 class Identity(InitializationFunction):
+    """Identity matrix initialization.
+
+    Creates a scaled identity matrix, which must be 2D and square.
+
+    Parameters
+    ----------
+    scale : float
+        Scale (default: 1)
+    """
+
     def __init__(self, scale=1.0):
-        """Identity matrix initialization.
-
-        Creates a scaled identity matrix, which must be 2D and square.
-
-        Parameters
-        ----------
-        scale : float
-            Scale (default: 1)
-        """
         self.scale = scale
 
     def __call__(self, dims, dtype=theano.config.floatX):
