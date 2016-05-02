@@ -156,6 +156,7 @@ class Model:
             raise ValueError('Submodel with name %s already exists in %s!' % (
                 submodel.name, self.name))
         self.submodels[submodel.name] = submodel
+        setattr(self, submodel.name, submodel)
         return submodel
 
     def save(self, f, include_submodels=True):
