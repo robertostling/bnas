@@ -63,6 +63,11 @@ class Model:
                 for name, p in submodel.parameters():
                     yield ((submodel.name,) + name, p)
 
+    def parameters_list(self, include_submodels=True):
+        """Return a list with parameters, without their names."""
+        return list(p for name, p in
+                self.parameters(include_submodels=include_submodels))
+
     def parameter(self, name):
         """Return the parameter with the given name.
         
@@ -86,8 +91,8 @@ class Model:
         else:
             raise ValueError('Name tuple must not be empty!')
 
-    def param(self, name, dims, value=None, init_f=init.Constant(np.nan),
-              dtype=theano.config.floatX):
+    def param(self, name, dims, init_f=None,
+              value=None, dtype=theano.config.floatX):
         """Create a new parameter, or share an existing one.
 
         Parameters
@@ -116,6 +121,9 @@ class Model:
                                  'exists in %s!' % (name, self.name))
             return self.params[name]
         if value is None:
+            if init_f is None:
+                raise ValueError('Creating new parameter, but no '
+                                 'initialization specified!')
             p = theano.shared(init_f(dims, dtype=dtype), name=name)
         else:
             p = value

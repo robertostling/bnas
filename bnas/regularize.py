@@ -20,7 +20,7 @@ class L2(Regularizer):
         return T.sqrt(T.sqr(p).sum()) * T.as_tensor_variable(self.penalty)
 
 
-def seq_l2(x):
+def sequence_l2(x):
     """Compute L2 norms over a sequence of batches."""
     return T.sqrt(T.sqr(x).sum(axis=2))
 
@@ -42,7 +42,8 @@ class StateNorm(Regularizer):
     def __call__(self, p):
         return ifelse(
                 p.shape[0] >= 2,
-                      T.sqr(seq_l2(p[1:,:,:]) - seq_l2(p[:-1,:,:])).mean()
+                      T.sqr(  sequence_l2(p[1:,:,:])
+                            - sequence_l2(p[:-1,:,:])).mean()
                     * T.as_tensor_variable(self.penalty),
                     T.as_tensor_variable(0.0))
 
