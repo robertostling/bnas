@@ -10,9 +10,9 @@ class Optimizer:
 
     Arguments
     ---------
-    params : OrderedDict
+    params : iterable over (name, parameter) tuples
         Parameters to optimize, in simple cases it's enough to pass
-        Model.params of the model to optimize.
+        Model.parameters().
     loss : Theano symbolic expression
         Loss function to minimize.
     inputs : list of Theano variables
@@ -24,14 +24,14 @@ class Optimizer:
         Clip gradients at this value.
     """
     def __init__(self, params, loss, inputs=[], outputs=[], grad_max_norm=None):
-        self.params = params
+        self.params = OrderedDict(('_'.join(name), p) for name, p in params)
         self.loss = loss
         self.inputs = inputs
         self.outputs = outputs
         self.grad_max_norm = grad_max_norm
 
         self.raw_grad = OrderedDict((name, T.grad(loss, param))
-                                    for name, param in params.items())
+                                    for name, param in self.params.items())
         if grad_max_norm is None:
             self.grad = self.raw_grad
         else:

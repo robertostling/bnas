@@ -34,7 +34,7 @@ if __name__ == '__main__':
     y = np.array([[0],    [1],    [1],    [0]],    dtype=theano.config.floatX)
 
     xor = MLP('xor')
-    optimizer = Adam(xor.params, xor.loss(), [xor.inputs], [xor.outputs])
+    optimizer = Adam(xor.parameters(), xor.loss(), [xor.inputs], [xor.outputs])
 
     for i in range(1000):
         loss = optimizer.step(x, y)

@@ -7,9 +7,6 @@ from theano import tensor as T
 
 from . import init
 
-# TODO: might not want to keep all parameters in the top-level Model, better
-# to keep them where they were imported from, and add recursive functions for
-# getting all submodel parameters.
 
 class Model:
     """Base class for neural network models.
@@ -20,11 +17,12 @@ class Model:
         Name of the model.
     params : OrderedDict of str ->
              :class:`theano.compile.sharedvalue.SharedVariable`
-        Mapping from parameter names to Theano shared variables. These are the
-        trainable parameters of the model.
+        Mapping from parameter names to Theano shared variables. Note that
+        submodel parameters are not included, so this should normally not be
+        accessed directly, rather use `self.parameters()`.
     regularization : list of Theano symbolic expressions
         These expressions should all be added to the loss function when
-        optimizing.
+        optimizing. Use `self.regularize()` to modify.
     """
 
     def __init__(self, name):
@@ -46,23 +44,51 @@ class Model:
               + self.regularization
         return sum(terms, T.as_tensor_variable(0.0))
 
-    def regularize(self, p, regularizer):
-        """Add regularization to a parameter.
+    def parameters(self, include_submodels=True):
+        """Iterate over the parameters of this model and its submodels.
+        
+        Each value produced by the iterator is a tuple (name, value), where
+        the name is a tuple of strings describing the hierarchy of submodels,
+        e.g. ('hidden', 'b'), and the value is a Theano shared variable.
 
         Parameters
         ----------
-        p : :class:`theano.compile.sharedvalue.SharedVariable`
-            Parameter to apply regularization
-        regularizer : function
-            Regularization function, which should return a symbolic
-            expression.
+        include_submodels : bool
+            If ``True`` (default), also iterate over submodel parameters.
         """
-        if not regularizer is None:
-            self.regularization.append(regularizer(p))
+        for name, p in self.params.items():
+            yield ((name,), p)
+        if include_submodels:
+            for submodel in self.submodels.values():
+                for name, p in submodel.parameters():
+                    yield ((submodel.name,) + name, p)
+
+    def parameter(self, name):
+        """Return the parameter with the given name.
+        
+        Parameters
+        ----------
+        name : tuple of str
+            Path to variable, e.g. ('hidden', 'b') to find the parameter 'b'
+            in the submodel 'hidden'.
+        
+        Returns
+        -------
+        value : :class:`theano.compile.sharedvalue.SharedVariable`
+        """
+
+        if not isinstance(name, tuple):
+            raise TypeError('Expected tuple, got %s' % type(name))
+        if len(name) == 1:
+            return self.param[name]
+        elif len(name) >= 2:
+            return self.submodels[name[0]].parameter(name[1:])
+        else:
+            raise ValueError('Name tuple must not be empty!')
 
     def param(self, name, dims, value=None, init_f=init.Constant(np.nan),
               dtype=theano.config.floatX):
-        """Create a new parameter (using a Theano shared variable)
+        """Create a new parameter, or share an existing one.
 
         Parameters
         ----------
@@ -97,6 +123,20 @@ class Model:
         setattr(self, '_'+name, p)
         return p
 
+    def regularize(self, p, regularizer):
+        """Add regularization to a parameter.
+
+        Parameters
+        ----------
+        p : :class:`theano.compile.sharedvalue.SharedVariable`
+            Parameter to apply regularization
+        regularizer : function
+            Regularization function, which should return a symbolic
+            expression.
+        """
+        if not regularizer is None:
+            self.regularization.append(regularizer(p))
+
     def add(self, submodel):
         """Import parameters from a submodel.
         
@@ -112,23 +152,25 @@ class Model:
         submodel : :class:`.Model`
             Equal to the parameter, for convenience.
         """
+        if submodel.name in self.submodels:
+            raise ValueError('Submodel with name %s already exists in %s!' % (
+                submodel.name, self.name))
         self.submodels[submodel.name] = submodel
-
-        for name, param in submodel.params.items():
-            self.param(submodel.name+'_'+name, param.get_value().shape,
-                       value=param, dtype=param.dtype)
-
         return submodel
 
-    def save(self, f):
-        """Save the weights of this model to a file object.
+    def save(self, f, include_submodels=True):
+        """Save the parameter values of this model to a file object.
 
         Parameters
         ----------
         f : file
             File object to write to, assumed to be opened in 'wb' mode.
+        include_submodels : bool
+            If ``True`` (default), also save submodel parameters.
         """
-        pickle.dump({name: p.get_value() for name, p in self.params.items()},
+        pickle.dump({name: p.get_value()
+                     for name, p in self.parameters(
+                         include_submodels=include_submodels)},
                     f, -1)
 
     def load(self, f, allow_incomplete=False, allow_unused=False):
@@ -146,18 +188,19 @@ class Model:
             parameters that are not used in this model.
         """
         data = pickle.load(f)
-        names = frozenset(data.keys()) & frozenset(self.params.keys())
-        if not allow_incomplete and len(names) < len(self.params):
+        parameters = list(self.parameters())
+        names = frozenset(data.keys()) & frozenset(parameters.keys())
+        if not allow_incomplete and len(names) < len(parameters):
             raise ValueError(
                     'The following parameters are missing: %s' % ', '.join(
-                        sorted(frozenset(self.params.keys()) - names)))
+                        sorted(frozenset(parameters.keys()) - names)))
         if not allow_unused and len(names) < len(data):
             raise ValueError(
                     'The following parameters are unused: %s' % ', '.join(
                         sorted(frozenset(data.keys()) - names)))
         for name in names:
             value = data[name]
-            old_value = self.params[name].get_value()
+            old_value = parameters[name].get_value()
             if value.shape != old_value.shape:
                 raise ValueError(
                         'Loaded shape is %s but %s expected' % (
@@ -167,7 +210,7 @@ class Model:
 
 class Linear(Model):
     """Fully connected linear layer.
-    
+
     This layer creates one shared parameter, `name_w` of shape
     `(input_dims, output_dims)` if `use_bias` is ``False``, otherwise it
     also creates `name_b` of shape `output_dims` for biases.
