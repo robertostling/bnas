@@ -103,18 +103,18 @@ class Orthogonal(InitializationFunction):
                     'Orthogonal matrix must be square, '
                     'but has shape: %s' % dims)
         if dims[0] == dims[1]:
-            M = gaussian(dims)
+            M = np.random.standard_normal(dims)
             Q, R = np.linalg.qr(M)
             Q = Q * np.sign(np.diag(R))
-            return Q * self.scale
-        M1 = gaussian((dims[0], dims[0]))
-        M2 = gaussian((dims[1], dims[1]))
+            return (Q * self.scale).astype(dtype)
+        M1 = np.random.standard_normal((dims[0], dims[0]))
+        M2 = np.random.standard_normal((dims[1], dims[1]))
         Q1, R1 = np.linalg.qr(M1)
         Q2, R2 = np.linalg.qr(M2)
         Q1 = Q1 * np.sign(np.diag(R1))
         Q2 = Q2 * np.sign(np.diag(R2))
         n_min = min(dims)
-        return np.dot(Q1[:, :n_min], Q2[:n_min, :]) * self.scale
+        return (np.dot(Q1[:,:n_min], Q2[:n_min,:]) * self.scale).astype(dtype)
 
 
 class Identity(InitializationFunction):
