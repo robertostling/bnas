@@ -7,6 +7,9 @@ from theano import tensor as T
 
 from . import init
 
+# TODO: might not want to keep all parameters in the top-level Model, better
+# to keep them where they were imported from, and add recursive functions for
+# getting all submodel parameters.
 
 class Model:
     """Base class for neural network models.
@@ -19,6 +22,9 @@ class Model:
              :class:`theano.compile.sharedvalue.SharedVariable`
         Mapping from parameter names to Theano shared variables. These are the
         trainable parameters of the model.
+    regularization : list of Theano symbolic expressions
+        These expressions should all be added to the loss function when
+        optimizing.
     """
 
     def __init__(self, name):
@@ -31,8 +37,30 @@ class Model:
         """
         self.name = name
         self.params = OrderedDict()
+        self.regularization = []
+        self.submodels = OrderedDict()
 
-    def param(self, name, dims, init_f=init.Constant(np.nan),
+    def loss(self):
+        """Part of the loss function that is independent of inputs."""
+        terms = [submodel.loss() for submodel in self.submodels.values()] \
+              + self.regularization
+        return sum(terms, T.as_tensor_variable(0.0))
+
+    def regularize(self, p, regularizer):
+        """Add regularization to a parameter.
+
+        Parameters
+        ----------
+        p : :class:`theano.compile.sharedvalue.SharedVariable`
+            Parameter to apply regularization
+        regularizer : function
+            Regularization function, which should return a symbolic
+            expression.
+        """
+        if not regularizer is None:
+            self.regularization.append(regularizer(p))
+
+    def param(self, name, dims, value=None, init_f=init.Constant(np.nan),
               dtype=theano.config.floatX):
         """Create a new parameter (using a Theano shared variable)
 
@@ -43,19 +71,54 @@ class Model:
             and used to create `self._name`.
         dims : tuple
             Shape of the parameter vector.
+        value : :class:`theano.compile.sharedvalue.SharedVariable`, optional
+            If this parameter should be shared, a SharedVariable instance can
+            be passed here.
         init_f : (tuple => numpy.ndarray)
             Function used to initialize the parameter vector.
-        dtype : numpy.dtype
+        dtype : str or numpy.dtype
             Data type (default is `theano.config.floatX`)
 
         Returns
         -------
         p : :class:`theano.compile.sharedvalue.SharedVariable`
         """
-        p = theano.shared(init_f(dims, dtype=dtype), name=name)
+        if name in self.params:
+            if not value is None:
+                raise ValueError('Trying to add a shared parameter (%s), '
+                                 'but a parameter with the same name already '
+                                 'exists in %s!' % (name, self.name))
+            return self.params[name]
+        if value is None:
+            p = theano.shared(init_f(dims, dtype=dtype), name=name)
+        else:
+            p = value
         self.params[name] = p
         setattr(self, '_'+name, p)
         return p
+
+    def add(self, submodel):
+        """Import parameters from a submodel.
+        
+        If a submodel named "hidden" has a parameter "b", it will be imported
+        as "hidden_b", also accessible as `self._hidden_b`.
+
+        Parameters
+        ----------
+        submodel : :class:`.Model`
+
+        Returns
+        -------
+        submodel : :class:`.Model`
+            Equal to the parameter, for convenience.
+        """
+        self.submodels[submodel.name] = submodel
+
+        for name, param in submodel.params.items():
+            self.param(submodel.name+'_'+name, param.get_value().shape,
+                       value=param, dtype=param.dtype)
+
+        return submodel
 
     def save(self, f):
         """Save the weights of this model to a file object.
@@ -101,55 +164,62 @@ class Model:
                             value.shape, old_value.shape))
             shared.set_value(value)
 
-    def linear(self, name, inputs, inputs_dims, outputs_dims,
-               w=None, w_init=init.Gaussian(0.01),
-               b=None, b_init=init.Constant(0),
-               use_bias=True):
-        """Create a fully connected linear layer.
-        
-        This layer creates one shared parameter, `name_w` of shape
-        `(input_dims, output_dims)` if `use_bias` is ``False``, otherwise it
-        also creates `name_b` of shape `output_dims` for biases.
 
-        Parameters
-        ----------
-        name : str
-            Name of layer.
-        inputs : :class:`~tensor.TensorVariable`
-            Inputs to layer, second last dimension of shape must be equal to
-            `inputs_dims`.
-        inputs_dims : int
-            Number of inputs.
-        outputs_dims : int
-            Number of outputs.
-        w : :class:`theano.compile.sharedvalue.SharedVariable`
-            Weight vector to use, or pass ``None`` (default) to create a new
-            one.
-        w_init : :class:`.init.InitializationFunction`
-            Initialization for weight vector, in case `w` is ``None``.
-        b : :class:`theano.compile.sharedvalue.SharedVariable`
-            Bias vector to use, or pass ``None`` (default) to create a new
-            one.
-        b_init : :class:`.init.InitializationFunction`
-            Initialization for bias vector, in case `b` is ``None``.
-        use_bias : bool
-            If ``False``, no bias is used and the `b` and `b_init` parameters
-            are ignored.
+class Linear(Model):
+    """Fully connected linear layer.
+    
+    This layer creates one shared parameter, `name_w` of shape
+    `(input_dims, output_dims)` if `use_bias` is ``False``, otherwise it
+    also creates `name_b` of shape `output_dims` for biases.
 
-        Returns
-        -------
-        outputs : :class:`~tensor.TensorVariable`
-            Symbolic variable for the layer's outputs. This will be of shape
-            `inputs.shape[:-1] + (outputs_dims,)`.
-        """
+    Parameters
+    ----------
+    name : str
+        Name of layer.
+    input_dims : int
+        Number of inputs.
+    output_dims : int
+        Number of outputs.
+    w : :class:`theano.compile.sharedvalue.SharedVariable`
+        Weight vector to use, or pass ``None`` (default) to create a new
+        one.
+    w_init : :class:`.init.InitializationFunction`
+        Initialization for weight vector, in case `w` is ``None``.
+    w_regularizer : :class:`.regularize.Regularizer`, optional
+        Regularization for weight matrix.
+    b : :class:`theano.compile.sharedvalue.SharedVariable`
+        Bias vector to use, or pass ``None`` (default) to create a new
+        one.
+    b_init : :class:`.init.InitializationFunction`
+        Initialization for bias vector, in case `b` is ``None``.
+    b_regularizer : :class:`.regularize.Regularizer`, optional
+        Regularization for biases.
+    use_bias : bool
+        If ``False``, no bias is used and the `b` and `b_init` parameters
+        are ignored.
+    """
+    def __init__(self, name, input_dims, output_dims,
+                 w=None, w_init=None, w_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None,
+                 use_bias=True):
+        super().__init__(name)
 
-        if w is None:
-            w = self.param(name+'_w', (inputs_dims, outputs_dims),
-                           init_f=w_init)
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.use_bias = use_bias
+
+        if w_init is None: w_init = init.Gaussian(np.sqrt(2.0/input_dims))
+        if b_init is None: b_init = init.Constant(0.0)
+
+        self.param('w', (input_dims, output_dims), init_f=w_init, value=w)
+        self.regularize(self._w, w_regularizer)
         if use_bias:
-            if b is None:
-                b = self.param(name+'_b', (outputs_dims,), init_f=b_init)
-            return T.dot(inputs, w) + b
+            self.param('b', (output_dims,), init_f=b_init, value=b)
+            self.regularize(self._b, b_regularizer)
+
+    def __call__(self, inputs):
+        if self.use_bias:
+            return T.dot(inputs, self._w) + self._b
         else:
-            return T.dot(inputs, w)
+            return T.dot(inputs, self._w)
 

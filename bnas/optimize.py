@@ -6,16 +6,41 @@ from theano import tensor as T
 
 
 class Optimizer:
-    def __init__(self, params, loss, inputs=[], outputs=[], grad_max_norm=5.0):
+    """Base class for optimizers.
+
+    Arguments
+    ---------
+    params : OrderedDict
+        Parameters to optimize, in simple cases it's enough to pass
+        Model.params of the model to optimize.
+    loss : Theano symbolic expression
+        Loss function to minimize.
+    inputs : list of Theano variables
+        Inputs to the model to optimize
+    outputs : list of Theano variables
+        Outputs of the model to optimize, the loss should depend on
+        `inputs + outputs`.
+    grad_max_norm : float
+        Clip gradients at this value.
+    """
+    def __init__(self, params, loss, inputs=[], outputs=[], grad_max_norm=None):
         self.params = params
         self.loss = loss
         self.inputs = inputs
         self.outputs = outputs
         self.grad_max_norm = grad_max_norm
 
-        self.grad = OrderedDict((name, T.grad(loss, param))
-                                for name, param in params.items())
-
+        self.raw_grad = OrderedDict((name, T.grad(loss, param))
+                                    for name, param in params.items())
+        if grad_max_norm is None:
+            self.grad = self.raw_grad
+        else:
+            norm = T.sqrt(T.stack(
+                [T.sqr(g).sum() for g in self.raw_grad.values()],
+                axis=0).sum())
+            a = T.switch(norm < self.grad_max_norm, 1, self.grad_max_norm/norm)
+            self.grad = OrderedDict((name, a*g)
+                                    for name, g in self.raw_grad.items())
 
     def step(self, *args):
         """Take one optimization step.
