@@ -1,3 +1,12 @@
+"""Loss functions.
+
+Instances of :class:`Model` typically define a `loss()` method using using
+model-specific values. This module contains helper functions that could be
+useful.
+
+See for instance `examples/rnn.py` for an example.
+"""
+
 import theano.tensor as T
 
 def batch_sequence_crossentropy(x, target, target_mask):
@@ -14,8 +23,9 @@ def batch_sequence_crossentropy(x, target, target_mask):
 
     Returns
     -------
-    Symbolic expression for the mean categorical cross-entropy per sequence
-    over the batches, using non-masked entries only.
+    cross_entropy : Theano symbolic expression
+        Symbolic expression for the mean categorical cross-entropy per
+        sequence over the batches, using non-masked entries only.
     """
     batch_size = x.shape[1]
     return (T.nnet.categorical_crossentropy(

@@ -2,6 +2,12 @@
 
 Each initialization function is implemented as a class, with callable objects
 that map shape tuples to initialized numpy arrays.
+
+Examples
+--------
+>>> from bnas.init import Orthogonal
+>>> from bnas.model import Linear
+>>> Linear('transition', 100, 100, w_init=Orthogonal())
 """
 
 import numpy as np
@@ -40,9 +46,9 @@ class Gaussian(InitializationFunction):
     Parameters
     ----------
     dev : float
-        Standard deviation of distribution (default: 0.01)
+        Standard deviation of distribution
     mean : float
-        Mean of distribution (default: 0)
+        Mean of distribution
     """
 
     def __init__(self, dev=0.01, mean=0.0):
@@ -64,9 +70,9 @@ class Uniform(InitializationFunction):
     Parameters
     ----------
     scale : float
-        Scale of distribution (default: 0.01)
+        Scale of distribution
     mean : float
-        Mean of distribution (default: 0)
+        Mean of distribution
     """
 
     def __init__(self, scale=0.01, mean=0.0):
@@ -90,7 +96,7 @@ class Orthogonal(InitializationFunction):
     Parameters
     ----------
     scale : float
-        Scaling factor (default: 1.0)
+        Scaling factor
     """
 
     def __init__(self, scale=1.0):
@@ -125,7 +131,7 @@ class Identity(InitializationFunction):
     Parameters
     ----------
     scale : float
-        Scale (default: 1)
+        Scale
     """
 
     def __init__(self, scale=1.0):
