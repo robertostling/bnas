@@ -20,6 +20,8 @@ class Gate(Model):
         self.add(Linear('emission', state_dims, n_symbols,
                         w_init=Gaussian(0.01)))
 
+    # TODO: add feedback, then implement greedy + beam search.
+    #       Make sure feedback doesn't mess up anything later.
     def __call__(self, state, *non_sequences):
         return (T.tanh(self.transition(state)),
                 T.nnet.softmax(self.emission(state)))
@@ -67,14 +69,16 @@ if __name__ == '__main__':
                      [], [outputs, outputs_mask])
 
     batch_size = 64
+    test_outputs, test_outputs_mask = mask_sequences(encoded[:batch_size], 256)
     for i in range(1):
-        for j in range(0, len(encoded), batch_size):
+        for j in range(batch_size, len(encoded), batch_size):
             batch = encoded[j:j+batch_size]
             outputs, outputs_mask = mask_sequences(batch, 256)
-
+            test_loss = optimizer.get_loss(test_outputs, test_outputs_mask)
             loss = optimizer.step(outputs, outputs_mask)
             if np.isnan(loss):
                 print('NaN at iteration %d!' % (i+1))
                 break
-            print('Epoch %d batch %d: loss = %g' % (i+1, j+1, loss))
+            print('Epoch %d sentence %d: loss = %g, test loss = %g' % (
+                i+1, j+1, loss, test_loss))
 
