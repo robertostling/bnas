@@ -41,6 +41,10 @@ class Optimizer:
             a = T.switch(norm < self.grad_max_norm, 1, self.grad_max_norm/norm)
             self.grad = OrderedDict((name, a*g)
                                     for name, g in self.raw_grad.items())
+        
+        self.get_loss = theano.function(
+                self.inputs+self.outputs,
+                self.loss)
 
     def step(self, *args):
         """Take one optimization step.
