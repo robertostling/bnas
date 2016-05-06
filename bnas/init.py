@@ -13,6 +13,45 @@ class InitializationFunction:
         raise NotImplementedError
 
 
+class Concatenated(InitializationFunction):
+    """Concatenated initializations.
+
+    This can be used to construct a matrix where different rows are
+    initialized in different ways, for instance if you have a recurrent
+    transformations with some inputs and want the state-to-state
+    transformation to use orthogonal matrix initialization and the
+    input-to-state transformation to use Gaussian initialization.
+
+    Arguments
+    ---------
+    init_funs : list of functions
+        Functions to initialize each of the matrices
+    div_fun : function (int => list of int), optional
+        Function mapping the shape of the first dimension to a list of
+        first-dimension shapes for each of the initialization functions in
+        `init_funs`. By default, the matrix is split up evenly, as in the
+        example below.
+
+    Example
+    -------
+    >>> Linear('transition', dims*2, dims, w_init=Concatenated([
+    ...     Orthogonal(),
+    ...     Gaussian(fan_in=dims)]))
+    """
+    def __init__(self, init_funs, div_fun=None):
+        if div_fun is None:
+            k = len(init_funs)
+            div_fun = lambda n: [n//k for _ in range(k)]
+        self.init_funs = init_funs
+        self.div_fun = div_fun
+
+    def __call__(self, dims, dtype=theano.config.floatX):
+        shapes = [(dim0,) + dims[1:] for dim0 in self.div_fun(dims[0])]
+        return np.concatenate(
+                [f(shape, dtype) for f, shape in zip(self.init_funs, shapes)],
+                axis=0)
+
+
 class Constant(InitializationFunction):
     """Constant initialization.
 
@@ -43,11 +82,18 @@ class Gaussian(InitializationFunction):
         Standard deviation of distribution (default: 0.01)
     mean : float
         Mean of distribution (default: 0)
+    fan_in : int, optional
+        If this argument is given, `dev` and `mean` are ignored. Instead,
+        mean 0 and standard deviation :math:`\sqrt{2/fan_in}` is used.
     """
 
-    def __init__(self, dev=0.01, mean=0.0):
-        self.dev = dev
-        self.mean = mean
+    def __init__(self, dev=0.01, mean=0.0, fan_in=None):
+        if fan_in is None:
+            self.dev = dev
+            self.mean = mean
+        else:
+            self.dev = np.sqrt(2.0/fan_in)
+            self.mean = 0.0
 
     def __call__(self, dims, dtype=theano.config.floatX):
         m = np.random.standard_normal(dims)*self.dev + self.mean
