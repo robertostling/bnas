@@ -1,8 +1,12 @@
 """Regularizations.
 
-Each regularization method is implemented as a subclass of `Regularizer`,
+Each regularization method is implemented as a subclass of
+:class:`Regularizer`,
 where the constructor takes the hyperparameters, and the `__call__` method
 constructs the symbolic loss expression given a parameter.
+
+These are made for use with :meth:`Model.regularize`, but can also be used
+directly in the :meth:`loss` method of :class:`.Model` subclasses.
 """
 
 import theano.tensor as T
@@ -20,30 +24,34 @@ class L2(Regularizer):
         return T.sqrt(T.sqr(p).sum()) * T.as_tensor_variable(self.penalty)
 
 
-def sequence_l2(x):
-    """Compute L2 norms over a sequence of batches."""
-    return T.sqrt(T.sqr(x).sum(axis=2))
-
-
 class StateNorm(Regularizer):
     """Squared norm difference between recurrent states.
 
-    For sequences of less than two elements, the value is defined as 0.
+    Note that this method seems to be unstable if the initial hidden state is
+    initialized to zero.
 
-    TODO: is this wise, or do we encourage empty sequences?
-   
     David Krueger & Roland Memisevic (2016).
-    Regularizing RNNs by stabilizing activations.
-    http://arxiv.org/pdf/1511.08400v7.pdf
+    `Regularizing RNNs by stabilizing activations. <http://arxiv.org/pdf/1511.08400v7.pdf>`_
     """
     def __init__(self, penalty=50.0):
         self.penalty = penalty
 
-    def __call__(self, p):
-        return ifelse(
-                p.shape[0] >= 2,
-                      T.sqr(  sequence_l2(p[1:,:,:])
-                            - sequence_l2(p[:-1,:,:])).mean()
-                    * T.as_tensor_variable(self.penalty),
-                    T.as_tensor_variable(0.0))
+    def __call__(self, p, p_mask):
+        """Compute the squared norm difference of a sequence.
+
+        Example
+        -------
+        >>> def loss(self, outputs, outputs_mask):
+        ...     # loss() definition from a custom Model subclass
+        ...     loss = super().loss()
+        ...     pred_states, pred_symbols = self(outputs, outputs_mask)
+        ...     # Include transition from initial state
+        ...     pred_states = T.concatenate([initial_state, pred_states],
+        ...                                 axis=0)
+        ...     return loss + StateNorm(50.0)(pred_states, outputs_mask)
+        """
+        mask = p_mask[:-1]
+        l2 = T.sqrt(T.sqr(p).sum(axis=2))
+        diff = (l2[1:] - l2[:-1]) * mask
+        return self.penalty * T.sqr(diff).sum() / mask.sum()
 
