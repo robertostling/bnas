@@ -1,3 +1,9 @@
+"""Optimization algorithms.
+
+This module provides different algorithms for optimization through (typically)
+stochastic mini-batch gradient descent.
+"""
+
 from collections import OrderedDict
 
 import numpy as np

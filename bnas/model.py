@@ -1,3 +1,13 @@
+"""Network models and submodels.
+
+The :class:`Model` class is used to encapsulate a set of Theano shared
+variables (model parameters), and can create symbolic expressions for model
+outputs and loss functions.
+
+This module also contains subclasses, such as :class:`Linear`, that function
+as building blocks for more complex networks.
+"""
+
 from collections import OrderedDict
 import pickle
 
