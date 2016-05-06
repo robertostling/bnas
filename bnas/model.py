@@ -15,8 +15,7 @@ class Model:
     ----------
     name : str
         Name of the model.
-    params : OrderedDict of str ->
-             :class:`theano.compile.sharedvalue.SharedVariable`
+    params : OrderedDict of str -> :class:`theano.compile.sharedvalue.SharedVariable`
         Mapping from parameter names to Theano shared variables. Note that
         submodel parameters are not included, so this should normally not be
         accessed directly, rather use `self.parameters()`.
@@ -260,7 +259,7 @@ class Linear(Model):
         self.output_dims = output_dims
         self.use_bias = use_bias
 
-        if w_init is None: w_init = init.Gaussian(np.sqrt(2.0/input_dims))
+        if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
         if b_init is None: b_init = init.Constant(0.0)
 
         self.param('w', (input_dims, output_dims), init_f=w_init, value=w)

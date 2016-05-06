@@ -1,3 +1,10 @@
+"""Loss functions.
+
+For most loss functions it is enough to use Theano, e.g. using
+:func:`theano.tensor.nnet.categorical_crossentropy` or just
+``((prediction-target)**2).sum()``.
+"""
+
 import theano.tensor as T
 
 def batch_sequence_crossentropy(x, target, target_mask):
