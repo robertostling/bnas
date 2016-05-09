@@ -353,3 +353,76 @@ class GRU(Model):
         h = z*state + (1-z)*hh
         return h
 
+
+class DSGU(Model):
+    """Deep Simple Gated Unit.
+    
+    http://arxiv.org/pdf/1604.02910v2.pdf
+    """
+
+    def __init__(self, name, input_dims, output_dims,
+                 w_xh=None, w_xh_init=None, w_xh_regularizer=None,
+                 w_zxh=None, w_zxh_init=None, w_zxh_regularizer=None,
+                 w_go=None, w_go_init=None, w_go_regularizer=None,
+                 w_xz=None, w_xz_init=None, w_xz_regularizer=None,
+                 w_hz=None, w_hz_init=None, w_hz_regularizer=None,
+                 b_g=None, b_g_init=None, b_g_regularizer=None,
+                 b_z=None, b_z_init=None, b_z_regularizer=None,
+                 use_bias=True):
+        super().__init__(name)
+
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.use_bias = use_bias
+
+        if w_xh_init is None: w_xh_init = init.Gaussian(fan_in=input_dims)
+        if w_xz_init is None: w_xz_init = init.Gaussian(fan_in=input_dims)
+        if w_zxh_init is None: w_zxh_init = init.Orthogonal()
+        if w_go_init is None: w_go_init = init.Orthogonal()
+        if w_hz_init is None: w_hz_init = init.Orthogonal()
+        if self.use_bias:
+            if b_z_init is None: b_z_init = init.Constant(0.0)
+            if b_g_init is None: b_g_init = init.Constant(0.0)
+        
+        self.param('w_xh', (input_dims,output_dims),
+                   init_f=w_xh_init, value=w_xh)
+        self.param('w_xz', (input_dims,output_dims),
+                   init_f=w_xz_init, value=w_xz)
+        self.param('w_zxh', (output_dims,output_dims),
+                   init_f=w_zxh_init, value=w_zxh)
+        self.param('w_go', (output_dims,output_dims),
+                   init_f=w_go_init, value=w_go)
+        self.param('w_hz', (output_dims,output_dims),
+                   init_f=w_hz_init, value=w_hz)
+
+        if self.use_bias:
+            self.param('b_z',(output_dims,), init_f=b_z_init, value=b_z)
+            self.param('b_g',(output_dims,), init_f=b_g_init, value=b_g)
+
+        self.regularize(self._w_xh,  w_xh_regularizer)
+        self.regularize(self._w_zxh, w_zxh_regularizer)
+        self.regularize(self._w_go,  w_go_regularizer)
+        self.regularize(self._w_xz,  w_xz_regularizer)
+        self.regularize(self._w_hz,  w_hz_regularizer)
+        if self.use_bias:
+            self.regularize(self._b_z, b_z_regularizer)
+            self.regularize(self._b_g, b_g_regularizer)
+
+    def __call__(self, inputs, state):
+        if self.use_bias:
+            x_g = T.dot(inputs, self._w_xh) + self._b_g
+        else:
+            x_g = T.dot(inputs, self._w_xh)
+        z_g = T.tanh(T.dot(x_g * state, self._w_zxh))
+        z_o = T.nnet.sigmoid(T.dot(z_g * state, self._w_go))
+        if self.use_bias:
+            z_t = T.nnet.hard_sigmoid(
+                      T.dot(inputs, self._w_xz)
+                    + T.dot(state, self._w_hz)
+                    + self._b_z)
+        else:
+            z_t = T.nnet.hard_sigmoid(
+                      T.dot(inputs, self._w_xz)
+                    + T.dot(state, self._w_hz))
+        return (1.0-z_t)*state + z_t*z_o
+
