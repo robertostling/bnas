@@ -13,11 +13,11 @@ def encode_sequences(sequences, max_n_symbols=None,
     def create_vocab():
         counts = Counter(sym for seq in sequences for sym in seq)
         if max_n_symbols is None:
-            vocab = special + tuple(counts.keys())
+            vocab = special + tuple(sorted(counts.keys()))
         else:
-            vocab = special + tuple(
+            vocab = special + tuple(sorted(
                     sym for sym, _ in
-                        counts.most_common(max_n_symbols-len(special)))
+                        counts.most_common(max_n_symbols-len(special))))
         return vocab
 
     vocab = create_vocab()
