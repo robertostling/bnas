@@ -134,9 +134,9 @@ class Model:
                 raise ValueError('Creating new parameter, but no '
                                  'initialization specified!')
             p = theano.shared(init_f(dims, dtype=dtype), name=name)
+            self.params[name] = p
         else:
             p = value
-        self.params[name] = p
         setattr(self, '_'+name, p)
         return p
 
