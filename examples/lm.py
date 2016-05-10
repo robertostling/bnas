@@ -124,7 +124,6 @@ if __name__ == '__main__':
     corpus_filename = sys.argv[1]
     model_filename = sys.argv[2]
     assert os.path.exists(corpus_filename)
-    assert not os.path.exists(model_filename)
 
     with open(corpus_filename, 'r', encoding='utf-8') as f:
         sents = [line.strip() for line in f if len(line) >= 10]
@@ -138,40 +137,48 @@ if __name__ == '__main__':
     outputs_mask = T.matrix('outputs_mask')
     lm = LanguageModel('lm', 32, 256, n_symbols)
 
-    # Create an Adam optimizer instance, manually specifying which parameters
-    # to optimize, which loss function to use, which inputs (none) and outputs
-    # are used for the model.
-    optimizer = Adam(lm.parameters(), lm.loss(outputs, outputs_mask),
-                     [], [outputs, outputs_mask])
+    if os.path.exists(model_filename):
+        with open(model_filename, 'rb') as f:
+            lm.load(f)
+            print('Load model from %s' % model_filename)
+    else:
+        # Create an Adam optimizer instance, manually specifying which
+        # parameters to optimize, which loss function to use, which inputs
+        # (none) and outputs are used for the model. We also specify the
+        # gradient clipping threshold.
+        optimizer = Adam(lm.parameters(), lm.loss(outputs, outputs_mask),
+                         [], [outputs, outputs_mask],
+                         grad_max_norm=5.0)
 
-    # Compile a function to compute cross-entropy of a batch.
-    cross_entropy = theano.function(
-            [outputs, outputs_mask], lm.cross_entropy(outputs, outputs_mask))
+        # Compile a function to compute cross-entropy of a batch.
+        cross_entropy = theano.function(
+                [outputs, outputs_mask],
+                lm.cross_entropy(outputs, outputs_mask))
 
-    batch_size = 128
-    # Get one batch of testing data, encoded as a masked matrix.
-    test_outputs, test_outputs_mask = mask_sequences(encoded[:batch_size], 256)
-    for i in range(1):
-        #for j in range(batch_size, len(encoded), batch_size):
-        for j in range(batch_size, batch_size*5, batch_size):
-            # Create one training batch
-            batch = encoded[j:j+batch_size]
-            outputs, outputs_mask = mask_sequences(batch, 256)
-            test_loss = cross_entropy(test_outputs, test_outputs_mask)
-            loss = optimizer.step(outputs, outputs_mask)
-            if np.isnan(loss):
-                print('NaN at iteration %d!' % (i+1))
-                break
-            print('Epoch %d sentence %d: batch loss = %g, test xent = %g' % (
-                i+1, j+1, loss/np.log(2),
-                test_loss/(np.log(2))))
+        batch_size = 128
+        # Get one batch of testing data, encoded as a masked matrix.
+        test_outputs, test_outputs_mask = mask_sequences(
+                encoded[:batch_size], 256)
+        for i in range(1):
+            for j in range(batch_size, len(encoded), batch_size):
+                # Create one training batch
+                batch = encoded[j:j+batch_size]
+                outputs, outputs_mask = mask_sequences(batch, 256)
+                test_loss = cross_entropy(test_outputs, test_outputs_mask)
+                loss = optimizer.step(outputs, outputs_mask)
+                if np.isnan(loss):
+                    print('NaN at iteration %d!' % (i+1))
+                    break
+                print('Batch %d:%d: train loss = %g, test xent = %g' % (
+                    i+1, j+1, loss/np.log(2),
+                    test_loss/(np.log(2))))
+
+        with open(model_filename, 'wb') as f:
+            lm.save(f)
+            print('Saved model to %s' % model_filename)
 
     pred, pred_mask, scores = lm.search(1, index['<S>'], index['</S>'], 72)
 
     for sent, score in zip(pred, scores):
         print(score, ''.join(symbols[x] for x in sent.flatten()))
-
-    with open(model_filename, 'wb') as f:
-        lm.save(f)
-        print('Saved model to %s' % model_filename)
 
