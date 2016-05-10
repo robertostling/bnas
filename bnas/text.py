@@ -1,3 +1,5 @@
+"""Text processing."""
+
 from collections import Counter
 
 import numpy as np
@@ -6,6 +8,30 @@ import theano
 
 def encode_sequences(sequences, max_n_symbols=None,
                      special=('<S>', '</S>', '<UNK>'), dtype=np.int64):
+    """Encode sequences as numpy arrays of integers.
+
+    Parameters
+    ----------
+    sequences : list
+        List of sequences to encode.
+    max_n_symbols : int, optional
+        If given, the total number of symbols (including special symbols) is
+        limited to this number. The most common symbols in the given sequences
+        are used.
+    special : tuple of str
+        List of special symbols to include.
+    dtype : numpy dtype
+        Datatype of returned arrays.
+
+    Returns
+    -------
+    vocabulary : list
+        List of vocabulary items, in order.
+    index : dict
+        ``{v:i for i,v in enumerate(vocabulary)}``
+    encoded_sequences : list
+        List of numpy arrays with the encoded `sequences`.
+    """
 
     if (not max_n_symbols is None) and ('<UNK>' not in special):
         raise ValueError('Missing <UNK> symbol with limited vocabulary')
@@ -35,6 +61,26 @@ def encode_sequences(sequences, max_n_symbols=None,
 
 
 def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
+    """Create a masked matrix of sequences.
+
+    Parameters
+    ----------
+    encoded : list
+        List of numpy arrays, possibly from :func:`encode_sequences`.
+    max_length : int
+        If given, this is the maximum number of columns in the returned
+        matrices.
+    dtype : numpy dtype
+        Datatype of the `matrix` return value.
+
+    Returns
+    -------
+    matrix : numpy array
+        Single array containing all the sequences in `encoded`.
+    mask : numpy array
+        Mask for `matrix`.
+    """
+
     length = max(map(len, encoded))
     if not max_length is None:
         length = min(length, max_length)
