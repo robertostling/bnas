@@ -186,7 +186,7 @@ class Model:
         include_submodels : bool
             If ``True`` (default), also save submodel parameters.
         """
-        pickle.dump({name: p.get_value()
+        pickle.dump({name: p.get_value(borrow=True)
                      for name, p in self.parameters(
                          include_submodels=include_submodels)},
                     f, -1)
@@ -206,7 +206,7 @@ class Model:
             parameters that are not used in this model.
         """
         data = pickle.load(f)
-        parameters = list(self.parameters())
+        parameters = dict(self.parameters())
         names = frozenset(data.keys()) & frozenset(parameters.keys())
         if not allow_incomplete and len(names) < len(parameters):
             raise ValueError(
@@ -218,12 +218,12 @@ class Model:
                         sorted(frozenset(data.keys()) - names)))
         for name in names:
             value = data[name]
-            old_value = parameters[name].get_value()
+            old_value = parameters[name].get_value(borrow=True)
             if value.shape != old_value.shape:
                 raise ValueError(
                         'Loaded shape is %s but %s expected' % (
                             value.shape, old_value.shape))
-            shared.set_value(value)
+            parameters[name].set_value(value)
 
 
 class Linear(Model):
