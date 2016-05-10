@@ -16,3 +16,10 @@ install it in development mode:
 python3 setup.py develop --user
 ```
 
+## Documentation
+
+The `examples/` directory contains commented example code that you could start
+from.
+
+Install Sphinx and run `docs/build.sh` to build the API reference.
+
