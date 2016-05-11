@@ -2,7 +2,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, GRU
+from bnas.model import Model, Linear, IRNN
 from bnas.optimize import Adam
 from bnas.init import Gaussian, Orthogonal, Constant
 from bnas.regularize import L2, StateNorm
@@ -17,12 +17,12 @@ class Gate(Model):
         super().__init__(name, **kwargs)
 
         # Define the parameters required for a recurrent transition using
-        # GRU units, taking a character embedding as input and outputting 
+        # iRNN units, taking a character embedding as input and outputting 
         # (through a fully connected tanh layer) a distribution over symbols.
         # The embeddings are shared between the input and output.
         self.param('embeddings', (n_symbols, embedding_dims),
                    init_f=Gaussian(fan_in=embedding_dims))
-        self.add(GRU('transition', embedding_dims, state_dims))
+        self.add(IRNN('transition', embedding_dims, state_dims))
         self.add(Linear('hidden', state_dims, embedding_dims))
         self.add(Linear('emission', embedding_dims, n_symbols,
                         w=self._embeddings.T))
@@ -135,7 +135,7 @@ if __name__ == '__main__':
 
     # Create the model.
     outputs = T.lmatrix('outputs')
-    outputs_mask = T.matrix('outputs_mask')
+    outputs_mask = T.bmatrix('outputs_mask')
     lm = LanguageModel('lm', 32, 256, n_symbols)
 
     if os.path.exists(model_filename):
