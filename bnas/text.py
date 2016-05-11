@@ -77,6 +77,8 @@ def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
     -------
     matrix : numpy array
         Single array containing all the sequences in `encoded`.
+        This array has shape (sequence_length, batch_size), which is the
+        transpose of what is obtained by padding and concatenating the inputs.
     mask : numpy array
         Mask for `matrix`.
     """
@@ -93,5 +95,7 @@ def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
         if len(seq) > length: return seq[:length]
         return np.concatenate([seq, np.ones(length-len(seq), dtype=seq.dtype)])
     batch = np.array([adjust(seq) for seq in encoded])
-    return batch, mask
+    # TODO: any later performance advantage from physically transposing the
+    # data?
+    return batch.T, mask.T
 
