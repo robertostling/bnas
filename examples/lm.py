@@ -2,14 +2,14 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, DSGU
+from bnas.model import Model, Linear, GRU
 from bnas.optimize import Adam
 from bnas.init import Gaussian, Orthogonal, Constant
 from bnas.regularize import L2, StateNorm
 from bnas.utils import expand_to_batch
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import encode_sequences, mask_sequences
-from bnas.search import beam
+from bnas.search import beam, greedy
 
 
 class Gate(Model):
@@ -17,12 +17,12 @@ class Gate(Model):
         super().__init__(name, **kwargs)
 
         # Define the parameters required for a recurrent transition using
-        # DSGU units, taking a character embedding as input and outputting 
+        # GRU units, taking a character embedding as input and outputting 
         # (through a fully connected tanh layer) a distribution over symbols.
         # The embeddings are shared between the input and output.
         self.param('embeddings', (n_symbols, embedding_dims),
                    init_f=Gaussian(fan_in=embedding_dims))
-        self.add(DSGU('transition', embedding_dims, state_dims))
+        self.add(GRU('transition', embedding_dims, state_dims))
         self.add(Linear('hidden', state_dims, embedding_dims))
         self.add(Linear('emission', embedding_dims, n_symbols,
                         w=self._embeddings.T))
@@ -95,7 +95,8 @@ class LanguageModel(Model):
                 symbol_seq, outputs[1:], outputs_mask[1:])
         return loss + xent + state_norm
 
-    def search(self, batch_size, start_symbol, stop_symbol, max_length):
+    def search(self, batch_size, start_symbol, stop_symbol,
+               max_length, min_length):
         # Perform a beam search.
 
         # Get the parameter values of the embeddings and initial state.
@@ -114,7 +115,7 @@ class LanguageModel(Model):
 
         # Call the library beam search function to do the dirty job.
         return beam(step, [state0], batch_size, start_symbol,
-                    stop_symbol, max_length)
+                    stop_symbol, max_length, min_length=min_length)
 
 
 if __name__ == '__main__':
@@ -156,28 +157,36 @@ if __name__ == '__main__':
                 lm.cross_entropy(outputs, outputs_mask))
 
         batch_size = 128
+        test_size = 32
+        max_length = 128
+
         # Get one batch of testing data, encoded as a masked matrix.
         test_outputs, test_outputs_mask = mask_sequences(
-                encoded[:batch_size], 256)
+                encoded[:test_size], max_length)
         for i in range(1):
-            for j in range(batch_size, len(encoded), batch_size):
+            for j in range(test_size, len(encoded), batch_size):
                 # Create one training batch
                 batch = encoded[j:j+batch_size]
-                outputs, outputs_mask = mask_sequences(batch, 256)
+                outputs, outputs_mask = mask_sequences(batch, max_length)
                 test_loss = cross_entropy(test_outputs, test_outputs_mask)
                 loss = optimizer.step(outputs, outputs_mask)
+
                 if np.isnan(loss):
                     print('NaN at iteration %d!' % (i+1))
                     break
-                print('Batch %d:%d: train loss = %g, test xent = %g' % (
-                    i+1, j+1, loss/np.log(2),
-                    test_loss/(np.log(2))))
+                print('Batch %d:%d: train: %.3f b/char, test: %.3f b/char' % (
+                    i+1, j+1,
+                    (batch_size/outputs_mask[1:].sum())*loss/np.log(2),
+                    (test_size/test_outputs_mask[1:].sum())
+                        *test_loss/(np.log(2))),
+                    flush=True)
 
         with open(model_filename, 'wb') as f:
             lm.save(f)
             print('Saved model to %s' % model_filename)
 
-    pred, pred_mask, scores = lm.search(1, index['<S>'], index['</S>'], 72)
+    pred, pred_mask, scores = lm.search(
+            1, index['<S>'], index['</S>'], 72, 72)
 
     for sent, score in zip(pred, scores):
         print(score, ''.join(symbols[x] for x in sent.flatten()))
