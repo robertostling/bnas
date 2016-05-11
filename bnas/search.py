@@ -65,7 +65,7 @@ def greedy(step, states0, batch_size, start_symbol, stop_symbol, max_length):
 
 
 def beam(step, states0, batch_size, start_symbol, stop_symbol, max_length,
-         beam_size=8):
+         beam_size=8, min_length=0):
     """Beam search algorithm.
 
     See the documentation for :meth:`greedy()`.
@@ -104,6 +104,8 @@ def beam(step, states0, batch_size, start_symbol, stop_symbol, max_length,
         for j in range(n_beams):
             part_states, part_dists = step(
                 i, [s[j,...] for s in states], sequence[j,...], mask[j,...])
+            if i <= min_length:
+                part_dists[:, stop_symbol] = 1e-30
             all_states.append(part_states)
             all_dists.append(part_dists)
 
