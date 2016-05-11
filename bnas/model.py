@@ -426,3 +426,37 @@ class DSGU(Model):
                     + T.dot(state, self._w_hz))
         return (1.0-z_t)*state + z_t*z_o
 
+
+class IRNN(Model):
+    """Identity Recurrent Neural Network (iRNN)."""
+
+    def __init__(self, name, input_dims, output_dims,
+                 w=None, w_init=None, w_regularizer=None,
+                 u=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None,
+                 use_bias=True):
+        super().__init__(name)
+
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.use_bias = use_bias
+
+        if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
+        if u_init is None: u_init = init.Identity()
+        if self.use_bias:
+            if b_init is None: b_init = init.Constant(0.0)
+
+        self.param('w',(input_dims,output_dims), init_f=w_init, value=w)
+        self.param('u',(output_dims,output_dims), init_f=u_init, value=u)
+        if self.use_bias:
+            self.param('b',(output_dims,), init_f=b_init, value=b)
+
+        self.regularize(self._w, w_regularizer)
+        self.regularize(self._u, u_regularizer)
+        if self.use_bias:
+            self.regularize(self._b, b_regularizer)
+
+    def __call__(self, inputs, state):
+        h = T.dot(inputs, self._w) + T.dot(state, self._u)
+        return T.nnet.relu(h + self._b) if self.use_bias else T.nnet.relu(h)
+
