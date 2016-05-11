@@ -60,7 +60,7 @@ def encode_sequences(sequences, max_n_symbols=None,
     return vocab, index, encoded
 
 
-def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
+def mask_sequences(encoded, max_length=None, dtype=np.int8):
     """Create a masked matrix of sequences.
 
     Parameters
@@ -71,7 +71,7 @@ def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
         If given, this is the maximum number of columns in the returned
         matrices.
     dtype : numpy dtype
-        Datatype of the `matrix` return value.
+        Datatype of the `mask` return value.
 
     Returns
     -------
@@ -79,7 +79,7 @@ def mask_sequences(encoded, max_length=None, dtype=theano.config.floatX):
         Single array containing all the sequences in `encoded`.
         This array has shape (sequence_length, batch_size), which is the
         transpose of what is obtained by padding and concatenating the inputs.
-    mask : numpy array
+    mask : numpy array (int8)
         Mask for `matrix`.
     """
 
