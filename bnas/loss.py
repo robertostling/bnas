@@ -11,6 +11,7 @@ For most loss functions it is enough to use pure Theano, e.g. using
 See for instance `examples/rnn.py` for an example.
 """
 
+import theano
 import theano.tensor as T
 
 def batch_sequence_crossentropy(x, target, target_mask):
@@ -31,7 +32,7 @@ def batch_sequence_crossentropy(x, target, target_mask):
         Symbolic expression for the mean categorical cross-entropy per
         sequence over the batches, using non-masked entries only.
     """
-    batch_size = x.shape[1]
+    batch_size = x.shape[1].astype(theano.config.floatX)
     return (T.nnet.categorical_crossentropy(
                 x.reshape((x.shape[0]*x.shape[1], x.shape[2])),
                 target.flatten())
