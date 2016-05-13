@@ -192,3 +192,23 @@ class Identity(InitializationFunction):
                     'Identity matrix must be square, but has shape %s' % dims)
         return np.eye(dims[0], dtype=dtype)
 
+
+class Identity2D(InitializationFunction):
+    """Identity filter for 2D convolutional layers."""
+
+    def __init__(self, scale=1.0):
+        self.scale = scale
+
+    def __call__(self, dims, dtype=theano.config.floatX):
+        if not len(dims) == 4:
+            raise ValueError('Shape of 2D filter must be 4D')
+        if not (dims[0] == dims[1] and dims[-2] == dims[-1]):
+            raise ValueError(
+                'First/second and third/fourth dimensions must be equal')
+        if not dims[-1] % 2 == 1:
+            raise ValueError('Filter size must be odd')
+        m = np.zeros(dims, dtype=dtype)
+        for i in range(dims[0]):
+            m[i,i,dims[-2]//2,dims[-1]//2] = self.scale
+        return m
+
