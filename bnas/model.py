@@ -285,6 +285,74 @@ class Linear(Model):
             return T.dot(inputs, self._w)
 
 
+class ConvSquare(Model):
+    """Square 2D convolution layer with linear activations."""
+
+    def __init__(self, name, side, input_dims, output_dims, filter_dims,
+                 stride=1):
+        super().__init__(name)
+        f_w_init = init.Gaussian(fan_in=side*side*input_dims)
+        b_init = init.Constant(0.0)
+        self.side = side
+        self.stride = stride
+        self.input_dims = input_dims
+        self.f_w_shape = (output_dims, input_dims, filter_dims, filter_dims)
+        self.param('f_w', self.f_w_shape, init_f=f_w_init)
+        self.param('b', (output_dims,), init_f=b_init)
+
+    def __call__(self, inputs):
+        x = T.nnet.conv2d(
+                inputs,
+                self._f_w,
+                input_shape=(None, self.input_dims, self.side, self.side),
+                filter_shape=self.f_w_shape,
+                border_mode='half',
+                subsample=(self.stride, self.stride),
+                filter_flip=True)
+
+        return x + self._b.dimshuffle('x',0,'x','x')
+
+
+class IRNNSquare(Model):
+    """iRNN with square 2D convolution."""
+
+    def __init__(self, name, side, input_dims, output_dims, filter_dims):
+        super().__init__(name)
+        f_w_init = init.Gaussian(fan_in=(filter_dims**2)*input_dims)
+        f_u_init = init.Gaussian(fan_in=(filter_dims**2)*output_dims)
+        #f_u_init = init.Identity2D()
+        b_init = init.Constant(0.0)
+        self.side = side
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.f_w_shape = (output_dims, input_dims, filter_dims, filter_dims)
+        self.f_u_shape = (output_dims, output_dims, filter_dims, filter_dims)
+        self.param('f_w', self.f_w_shape, init_f=f_w_init)
+        self.param('f_u', self.f_u_shape, init_f=f_u_init)
+        self.param('b', (output_dims,), init_f=b_init)
+
+    def __call__(self, inputs, state):
+        x = T.nnet.conv2d(
+                inputs,
+                self._f_w,
+                input_shape=(None, self.input_dims, self.side, self.side),
+                filter_shape=self.f_w_shape,
+                border_mode='half',
+                subsample=(1,1),
+                filter_flip=True)
+
+        h = T.nnet.conv2d(
+                inputs,
+                self._f_u,
+                input_shape=(None, self.output_dims, self.side, self.side),
+                filter_shape=self.f_u_shape,
+                border_mode='half',
+                subsample=(1,1),
+                filter_flip=True)
+
+        return T.nnet.relu(x + h + self._b.dimshuffle('x',0,'x','x'))
+
+
 class GRU(Model):
     """Gated Recurrent Unit."""
 
