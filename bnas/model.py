@@ -285,14 +285,54 @@ class Linear(Model):
             return T.dot(inputs, self._w)
 
 
+class Conv1D(Model):
+    """1D convolution layer with linear activations."""
+
+    def __init__(self, name, input_dims, output_dims,
+                 filter_dims=3, stride=1,
+                 f=None, f_init=None, f_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None):
+        super().__init__(name)
+        if f_init is None:
+            f_init = init.Gaussian(fan_in=filter_dims*input_dims)
+        if b_init is None:
+            b_init = init.Constant(0.0)
+        self.stride = stride
+        self.input_dims = input_dims
+        self.f_shape = (output_dims, input_dims, filter_dims, 1)
+        self.param('f', self.f_shape, init_f=f_init)
+        self.param('b', (output_dims,), init_f=b_init)
+
+    def __call__(self, inputs):
+        x = T.nnet.conv2d(
+                inputs.dimshuffle(0,2,1,'x'),
+                self._f,
+                input_shape=(None, self.input_dims, None, 1),
+                filter_shape=self.f_shape,
+                border_mode='half',
+                subsample=(self.stride, 1),
+                filter_flip=True)
+
+        batch_size = inputs.shape[0]
+        length = inputs.shape[1]
+        dims = inputs.shape[2]
+
+        x = x.reshape((batch_size, dims, length)).dimshuffle(0,2,1)
+
+        return x + self._b.dimshuffle('x','x',0)
+
+
 class ConvSquare(Model):
-    """Square 2D convolution layer with linear activations."""
+    """Square fixed-size 2D convolution layer with linear activations."""
 
     def __init__(self, name, side, input_dims, output_dims, filter_dims,
-                 stride=1):
+                 stride=1,
+                 f_w_init=None, b_init=None):
         super().__init__(name)
-        f_w_init = init.Gaussian(fan_in=side*side*input_dims)
-        b_init = init.Constant(0.0)
+        if f_w_init is None:
+            f_w_init = init.Gaussian(fan_in=side*side*input_dims)
+        if b_init is None:
+            b_init = init.Constant(0.0)
         self.side = side
         self.stride = stride
         self.input_dims = input_dims
@@ -319,8 +359,7 @@ class IRNNSquare(Model):
     def __init__(self, name, side, input_dims, output_dims, filter_dims):
         super().__init__(name)
         f_w_init = init.Gaussian(fan_in=(filter_dims**2)*input_dims)
-        f_u_init = init.Gaussian(fan_in=(filter_dims**2)*output_dims)
-        #f_u_init = init.Identity2D()
+        f_u_init = init.Identity2D()
         b_init = init.Constant(0.0)
         self.side = side
         self.input_dims = input_dims
