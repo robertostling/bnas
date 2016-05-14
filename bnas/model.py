@@ -393,6 +393,55 @@ class IRNNSquare(Model):
         return T.nnet.relu(x + h + self._b.dimshuffle('x',0,'x','x'))
 
 
+class StackedRNN(Model):
+    """Stacked recurrent unit of a specified type.
+    
+    Parameters
+    ----------
+    name : str
+        Name of layer.
+    gate : class
+        Recurrent gate class, e.g. :class:`.GRU` or :class:`.IRNN`
+    input_dims : int
+        Number of dimensions in input (passed directly to `gate`)
+    state_dims : int
+        The product of `n_layers` and the hidden state dimensionality of each
+        layer. For instance, if you stack 4 GRUs, each with an `output_dims`
+        of 1000, this argument should be 4000.
+    n_layers : int
+        Number of layers.
+    """
+
+    def __init__(self, name, gate, input_dims, state_dims, n_layers, **kwargs):
+        super().__init__(name)
+
+        if state_dims % n_layers != 0:
+            raise ValueError(
+                'A stacked RNN must have a state dimensionality which is a '
+                'multiple of the number of layers, but state_dims = %d and '
+                'n_layers = %d' % (state_dims, n_layers))
+
+        self.n_layers = n_layers
+        output_dims = state_dims // n_layers
+        self.output_dims = output_dims
+
+        self.add(gate('layer0', input_dims, output_dims, **kwargs))
+        for i in range(1, n_layers):
+            self.add(gate('layer%d' % i, output_dims, output_dims, **kwargs))
+
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+
+    def __call__(self, inputs, state):
+        if self.n_layers == 1: return self.layer0(inputs, state)
+        outputs = [self.layer0(inputs, state[:, :self.output_dims])]
+        for i in range(1, self.n_layers):
+            outputs.append(getattr(self, 'layer%d' % i)(
+                outputs[-1],
+                state[:, i*self.output_dims:(i+1)*self.output_dims]))
+        return T.concatenate(outputs, axis=-1)
+
+
 class GRU(Model):
     """Gated Recurrent Unit."""
 
