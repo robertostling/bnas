@@ -9,6 +9,7 @@ These are made for use with :meth:`Model.regularize`, but can also be used
 directly in the :meth:`loss` method of :class:`.Model` subclasses.
 """
 
+import theano
 import theano.tensor as T
 from theano.ifelse import ifelse
 
@@ -53,5 +54,6 @@ class StateNorm(Regularizer):
         mask = p_mask[:-1]
         l2 = T.sqrt(T.sqr(p).sum(axis=2))
         diff = (l2[1:] - l2[:-1]) * mask
-        return self.penalty * T.sqr(diff).sum() / mask.sum()
+        return (self.penalty * T.sqr(diff).sum() /
+                mask.sum().astype(theano.config.floatX))
 
