@@ -19,6 +19,14 @@ class InitializationFunction:
         raise NotImplementedError
 
 
+def even_split(k):
+    def split(n):
+        if n % k != 0:
+            raise ValueError('Can not split evenly!')
+        return [n//k for _ in range(k)]
+    return split
+
+
 class Concatenated(InitializationFunction):
     """Concatenated initializations.
 
@@ -37,25 +45,30 @@ class Concatenated(InitializationFunction):
         first-dimension shapes for each of the initialization functions in
         `init_funs`. By default, the matrix is split up evenly, as in the
         example below.
-
+    axis : int
+        Axis along which to concatenate, default is 0 which is useful when
+        transforming several inputs, but set to 1 if several concatenated
+        outputs are produced.
     Example
     -------
     >>> Linear('transition', dims*2, dims, w_init=Concatenated([
     ...     Orthogonal(),
     ...     Gaussian(fan_in=dims)]))
     """
-    def __init__(self, init_funs, div_fun=None):
+    def __init__(self, init_funs, div_fun=None, axis=0):
         if div_fun is None:
             k = len(init_funs)
-            div_fun = lambda n: [n//k for _ in range(k)]
+            div_fun = even_split(k)
         self.init_funs = init_funs
         self.div_fun = div_fun
+        self.axis = axis
 
     def __call__(self, dims, dtype=theano.config.floatX):
-        shapes = [(dim0,) + dims[1:] for dim0 in self.div_fun(dims[0])]
+        shapes = [dims[:self.axis] + (dim0,) + dims[self.axis+1:]
+                  for dim0 in self.div_fun(dims[self.axis])]
         return np.concatenate(
                 [f(shape, dtype) for f, shape in zip(self.init_funs, shapes)],
-                axis=0)
+                axis=self.axis)
 
 
 class Constant(InitializationFunction):
