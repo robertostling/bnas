@@ -423,14 +423,13 @@ class StackedRNN(Model):
 
         self.n_layers = n_layers
         output_dims = state_dims // n_layers
+        self.input_dims = input_dims
         self.output_dims = output_dims
 
         self.add(gate('layer0', input_dims, output_dims, **kwargs))
         for i in range(1, n_layers):
+            # TODO: should use init.Orthogonal() here
             self.add(gate('layer%d' % i, output_dims, output_dims, **kwargs))
-
-        self.input_dims = input_dims
-        self.output_dims = output_dims
 
     def __call__(self, inputs, state):
         if self.n_layers == 1: return self.layer0(inputs, state)
@@ -440,6 +439,66 @@ class StackedRNN(Model):
                 outputs[-1],
                 state[:, i*self.output_dims:(i+1)*self.output_dims]))
         return T.concatenate(outputs, axis=-1)
+
+
+class LSTM(Model):
+    """Long Short-Term Memory."""
+
+    def __init__(self, name, input_dims, output_dims,
+                 w=None, w_init=None, w_regularizer=None,
+                 u=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None):
+        super().__init__(name)
+
+        if output_dims % 2 != 0:
+            raise ValueError(
+                    'LSTM output_dims must be even, is %d' % output_dims)
+        state_dims = output_dims // 2
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.state_dims = state_dims
+
+        if w_init is None: w_init = init.Concatenated([
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims)],
+            axis=1)
+
+        if u_init is None: u_init = init.Concatenated([
+            init.Orthogonal(),
+            init.Orthogonal(),
+            init.Orthogonal(),
+            init.Orthogonal()],
+            axis=1)
+
+        if b_init is None: b_init = init.Concatenated([
+            init.Constant(0.0),
+            init.Constant(1.0),
+            init.Constant(0.0),
+            init.Constant(0.0)])
+
+        self.param('w', (input_dims, state_dims*4), init_f=w_init, value=w)
+        self.param('u', (state_dims, state_dims*4), init_f=u_init, value=u)
+        self.param('b', (state_dims*4,), init_f=b_init, value=b)
+
+        self.regularize(self._w, w_regularizer)
+        self.regularize(self._u, u_regularizer)
+        self.regularize(self._b, b_regularizer)
+
+    def __call__(self, inputs, state):
+        h_tm1 = state[:, :self.state_dims]
+        c_tm1 = state[:, self.state_dims:]
+        x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u) \
+          + self._b.dimshuffle('x', 0)
+        i = T.nnet.sigmoid(x[:,0*self.state_dims:1*self.state_dims])
+        f = T.nnet.sigmoid(x[:,1*self.state_dims:2*self.state_dims])
+        o = T.nnet.sigmoid(x[:,2*self.state_dims:3*self.state_dims])
+        c = T.tanh(        x[:,3*self.state_dims:4*self.state_dims])
+        c_t = f*c_tm1 + i*c
+        h_t = o*T.tanh(c_t)
+
+        return T.concatenate([h_t, c_t], axis=-1)
 
 
 class GRU(Model):
