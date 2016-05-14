@@ -303,9 +303,10 @@ class Conv1D(Model):
         self.param('f', self.f_shape, init_f=f_init)
         self.param('b', (output_dims,), init_f=b_init)
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, inputs_mask):
         x = T.nnet.conv2d(
-                inputs.dimshuffle(0,2,1,'x'),
+                (inputs * inputs_mask.dimshuffle(0,1,'x')
+                    ).dimshuffle(0,2,1,'x'),
                 self._f,
                 input_shape=(None, self.input_dims, None, 1),
                 filter_shape=self.f_shape,
