@@ -178,6 +178,50 @@ class Nesterov(Optimizer):
         return self.step2(*(args + (self.learning_rate, self.momentum)))
 
 
+class RMSProp(Optimizer):
+    """RMSProp optimizer.
+
+    Parameters
+    ----------
+    learning_rate : float, optional
+        Initial learning rate. Default is 0.01.
+    decay : float, optional
+        Decay rate, default: 0.9
+    epsilon : float, optional
+        Stabilizing constant, default: 1e-8
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.learning_rate = kwargs.get('learning_rate', 0.001)
+        self.decay = kwargs.get('decay', 0.9)
+        self.epsilon = kwargs.get('epsilon', 1e-6)
+
+        learning_rate = T.scalar('learning_rate')
+        decay = T.scalar('decay')
+
+        squares = self.create_shadows('squares')
+
+        new_squares = [decay*square + (1.0-decay)*T.sqr(g)
+                       for g, square in zip(
+                           self.grad.values(), squares.values())]
+
+        ds = [-g*learning_rate/T.sqrt(square + self.epsilon)
+              for g,square in zip(self.grad.values(), new_squares)]
+
+        updates = [(p, p+d) for p,d in zip(self.params.values(), ds)] \
+                + list(zip(squares.values(), new_squares)) \
+
+        self.step1 = theano.function(
+                inputs=self.inputs+self.outputs+[learning_rate, decay],
+                outputs=self.loss,
+                updates=updates)
+
+    def step(self, *args):
+        return self.step1(*(args + (self.learning_rate, self.decay)))
+
+
 class Adam(Optimizer):
     """Adam optimizer.
 
