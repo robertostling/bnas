@@ -505,68 +505,49 @@ class GRU(Model):
     """Gated Recurrent Unit."""
 
     def __init__(self, name, input_dims, output_dims,
-                 w_z=None, w_z_init=None, w_z_regularizer=None,
-                 w_r=None, w_r_init=None, w_r_regularizer=None,
-                 w_h=None, w_h_init=None, w_h_regularizer=None,
-                 u_z=None, u_z_init=None, u_z_regularizer=None,
-                 u_r=None, u_r_init=None, u_r_regularizer=None,
-                 u_h=None, u_h_init=None, u_h_regularizer=None,
-                 b_z=None, b_z_init=None, b_z_regularizer=None,
-                 b_r=None, b_r_init=None, b_r_regularizer=None,
-                 b_h=None, b_h_init=None, b_h_regularizer=None,
-                 use_bias=True):
+                 w=None, w_init=None, w_regularizer=None,
+                 u=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None):
         super().__init__(name)
 
+        state_dims = output_dims
         self.input_dims = input_dims
-        self.output_dims = output_dims
-        self.use_bias = use_bias
+        self.state_dims = state_dims
 
-        if w_z_init is None: w_z_init = init.Gaussian(fan_in=input_dims)
-        if w_r_init is None: w_r_init = init.Gaussian(fan_in=input_dims)
-        if w_h_init is None: w_h_init = init.Gaussian(fan_in=input_dims)
-        if u_z_init is None: u_z_init = init.Orthogonal()
-        if u_r_init is None: u_r_init = init.Orthogonal()
-        if u_h_init is None: u_h_init = init.Orthogonal()
-        if self.use_bias:
-            if b_z_init is None: b_z_init = init.Constant(0.0)
-            if b_r_init is None: b_r_init = init.Constant(0.0)
-            if b_h_init is None: b_h_init = init.Constant(0.0)
-        
-        self.param('w_z',(input_dims,output_dims),  init_f=w_z_init, value=w_z)
-        self.param('w_r',(input_dims,output_dims),  init_f=w_r_init, value=w_r)
-        self.param('w_h',(input_dims,output_dims),  init_f=w_h_init, value=w_h)
-        self.param('u_z',(output_dims,output_dims), init_f=u_z_init, value=u_z)
-        self.param('u_r',(output_dims,output_dims), init_f=u_r_init, value=u_r)
-        self.param('u_h',(output_dims,output_dims), init_f=u_h_init, value=u_h)
-        if self.use_bias:
-            self.param('b_z',(output_dims,), init_f=b_z_init, value=b_z)
-            self.param('b_r',(output_dims,), init_f=b_r_init, value=b_r)
-            self.param('b_h',(output_dims,), init_f=b_h_init, value=b_h)
+        if w_init is None: w_init = init.Concatenated([
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims)],
+            axis=1)
 
-        self.regularize(self._w_z, w_z_regularizer)
-        self.regularize(self._w_r, w_r_regularizer)
-        self.regularize(self._w_h, w_h_regularizer)
-        self.regularize(self._u_z, u_z_regularizer)
-        self.regularize(self._u_r, u_r_regularizer)
-        self.regularize(self._u_h, u_h_regularizer)
-        if self.use_bias:
-            self.regularize(self._b_z, b_z_regularizer)
-            self.regularize(self._b_r, b_r_regularizer)
-            self.regularize(self._b_h, b_h_regularizer)
+        if u_init is None: u_init = init.Concatenated([
+            init.Orthogonal(),
+            init.Orthogonal(),
+            init.Orthogonal()],
+            axis=1)
+
+        if b_init is None: b_init = init.Concatenated([
+            init.Constant(0.0),
+            init.Constant(0.0),
+            init.Constant(0.0)])
+
+        self.param('w', (input_dims, state_dims*3), init_f=w_init, value=w)
+        self.param('u', (state_dims, state_dims*3), init_f=u_init, value=u)
+        self.param('b', (state_dims*3,), init_f=b_init, value=b)
+
+        self.regularize(self._w, w_regularizer)
+        self.regularize(self._u, u_regularizer)
+        self.regularize(self._b, b_regularizer)
 
     def __call__(self, inputs, state):
-        if self.use_bias:
-            x_z = T.dot(inputs, self._w_z) + self._b_z
-            x_r = T.dot(inputs, self._w_r) + self._b_r
-            x_h = T.dot(inputs, self._w_h) + self._b_h
-        else:
-            x_z = T.dot(inputs, self._w_z)
-            x_r = T.dot(inputs, self._w_r)
-            x_h = T.dot(inputs, self._w_h)
-        z = T.nnet.sigmoid(x_z + T.dot(state, self._u_z))
-        r = T.nnet.sigmoid(x_r + T.dot(state, self._u_r))
-        hh = T.tanh(x_h + T.dot(r * state, self._u_h))
-        h = z*state + (1-z)*hh
+        x_zrh = T.dot(inputs, self._w) + self._b.dimshuffle('x', 0)
+        zr = T.nnet.sigmoid(x_zrh[:, :self.state_dims*2] +
+                            T.dot(state, self._u[:, :self.state_dims*2]))
+        z = zr[:, :self.state_dims]
+        r = zr[:, self.state_dims:]
+        x_h = x_zrh[:, self.state_dims*2:]
+        hh = T.tanh(x_h + T.dot(r * state, self._u[:, self.state_dims*2:]))
+        h = z*state + (1.0-z)*hh
         return h
 
 
