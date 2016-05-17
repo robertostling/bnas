@@ -676,3 +676,42 @@ class IRNN(Model):
         h = T.dot(inputs, self._w) + T.dot(state, self._u)
         return T.nnet.relu(h + self._b) if self.use_bias else T.nnet.relu(h)
 
+
+class BatchNormalization(Model):
+    """Batch Normalization layer.
+
+    Parameters
+    ----------
+    name : str
+        Name of layer.
+    shape : tuple
+        Shape of input (and output), excluding minibatch dimension 0.
+    gamma_init : function
+        Initialization function for gamma parameter, default: Constant(1).
+    beta_init : function
+        Initialization function for beta parameter, default: Constant(0).
+    """
+
+    def __init__(self, name, shape, gamma_init=None, beta_init=None):
+        super().__init__(name)
+
+        self.shape = shape
+        if gamma_init is None: gamma_init = init.Constant(1.0)
+        if beta_init is None: beta_init = init.Constant(0.0)
+
+        self.param('gamma', shape, init_f=gamma_init)
+        self.param('beta', shape, init_f=beta_init)
+
+    def __call__(self, inputs, training=True):
+        if training:
+            mean = inputs.mean(axis=0, keepdims=True)
+            std = inputs.std(axis=0, keepdims=True)
+            return T.nnet.bn.batch_normalization(
+                    inputs,
+                    T.shape_padaxis(self._gamma, axis=0),
+                    T.shape_padaxis(self._beta, axis=0),
+                    mean, std)
+        else:
+            raise NotImplementedError(
+                'Batch Normalization currently only supports training mode')
+
