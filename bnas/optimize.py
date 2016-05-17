@@ -106,10 +106,10 @@ class SGD(Optimizer):
         Initial learning rate. Default is 0.01.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, learning_rate=0.01, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.learning_rate = kwargs.get('learning_rate', 0.01)
+        self.learning_rate = learning_rate
 
         learning_rate = T.scalar('learning_rate')
 
@@ -143,11 +143,11 @@ class Nesterov(Optimizer):
         Initial momentum parameter. Default is 0.9.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, learning_rate=0.01, momentum=0.9, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.learning_rate = kwargs.get('learning_rate', 0.01)
-        self.momentum = kwargs.get('momentum', 0.9)
+        self.learning_rate = learning_rate
+        self.momentum = momentum
 
         learning_rate = T.scalar('learning_rate')
         momentum = T.scalar('momentum')
@@ -184,19 +184,20 @@ class RMSProp(Optimizer):
     Parameters
     ----------
     learning_rate : float, optional
-        Initial learning rate. Default is 0.01.
+        Initial learning rate.
     decay : float, optional
-        Decay rate, default: 0.9
+        Decay rate.
     epsilon : float, optional
-        Stabilizing constant, default: 1e-8
+        Stabilizing constant.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, learning_rate=0.001, decay=0.9, epsilon=1e-8,
+                 **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.learning_rate = kwargs.get('learning_rate', 0.001)
-        self.decay = kwargs.get('decay', 0.9)
-        self.epsilon = kwargs.get('epsilon', 1e-6)
+        self.learning_rate = learning_rate0
+        self.decay = deay0
+        self.epsilon = epsilon0
 
         learning_rate = T.scalar('learning_rate')
         decay = T.scalar('decay')
@@ -243,13 +244,11 @@ class Adam(Optimizer):
     http://arxiv.org/abs/1412.6980
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, learning_rate=0.001, beta_1=0.9,
+                 beta_2=0.999, epsilon=1e-8, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.learning_rate = kwargs.get('learning_rate', 0.001)
-        beta_1 = kwargs.get('beta_1', 0.9)
-        beta_2 = kwargs.get('beta_2', 0.999)
-        epsilon = kwargs.get('epsilon', 1e-8)
+        self.learning_rate = learning_rate
 
         learning_rate = T.scalar('learning_rate')
 
