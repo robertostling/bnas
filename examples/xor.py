@@ -2,7 +2,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear
+from bnas.model import Model, Linear, BatchNormalization
 from bnas.optimize import Adam, SGD
 from bnas.init import Gaussian
 from bnas.regularize import L2
@@ -11,7 +11,9 @@ class MLP(Model):
     def __init__(self, name, **kwargs):
         super().__init__(name, **kwargs)
 
-        self.add(Linear('hidden', 2, 8, w_regularizer=L2(0.001)))
+        self.add(Linear('hidden', 2, 8,
+                        use_bias=False, w_regularizer=L2(0.001)))
+        self.add(BatchNormalization('hidden_bn', (8,)))
         self.add(Linear('output', 8, 1))
 
     def loss(self, inputs, outputs):
@@ -19,7 +21,8 @@ class MLP(Model):
         return loss + ((self(inputs) - outputs) ** 2).mean()
 
     def __call__(self, inputs):
-        return T.nnet.sigmoid(self.output(T.tanh(self.hidden(inputs))))
+        return T.nnet.sigmoid(self.output(
+            T.tanh(self.hidden_bn(self.hidden(inputs)))))
 
 
 if __name__ == '__main__':
