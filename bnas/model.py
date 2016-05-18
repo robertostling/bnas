@@ -393,6 +393,102 @@ class IRNNSquare(Model):
         return T.nnet.relu(x + h + self._b.dimshuffle('x',0,'x','x'))
 
 
+class GRU2D(Model):
+    """Gated Recurrent Unit using 2D convolutions."""
+
+    def __init__(self, name, side, input_dims, output_dims,
+                 filter_dims=3, stride=1,
+                 w=None, w_init=None, w_regularizer=None,
+                 u=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None):
+        super().__init__(name)
+
+        assert output_dims % (side*side) == 0
+        assert input_dims % (side*side) == 0
+        state_dims = output_dims
+        self.side = side
+        self.stride = stride
+        self.n_in_filters = input_dims // (side*side)
+        self.n_filters = output_dims // (side*side)
+        self.w_shape = (self.n_filters*3, self.n_in_filters,
+                        filter_dims, filter_dims)
+        self.u_shape = (self.n_filters*3, self.n_filters,
+                        filter_dims, filter_dims)
+        self.filter_dims = filter_dims
+        self.input_dims = input_dims
+        self.state_dims = state_dims
+
+        if w_init is None: w_init = init.Concatenated([
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_in_filters),
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_in_filters),
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_in_filters)],
+            axis=0)
+
+        if u_init is None: u_init = init.Concatenated([
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_filters),
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_filters),
+            init.Gaussian(fan_in=filter_dims*filter_dims*self.n_filters)],
+            axis=0)
+
+        if b_init is None: b_init = init.Concatenated([
+            init.Constant(0.0),
+            init.Constant(0.0),
+            init.Constant(0.0)])
+
+        self.param('w', (self.n_filters*3, self.n_in_filters,
+                         filter_dims, filter_dims),
+                   init_f=w_init, value=w)
+        self.param('u', (self.n_filters*3, self.n_filters,
+                         filter_dims, filter_dims),
+                   init_f=u_init, value=u)
+        self.param('b', (self.n_filters*3,), init_f=b_init, value=b)
+
+        self.regularize(self._w, w_regularizer)
+        self.regularize(self._u, u_regularizer)
+        self.regularize(self._b, b_regularizer)
+
+    def __call__(self, inputs, state):
+        batch_size = inputs.shape[0]
+        state2d = state.reshape(
+                (batch_size, self.n_filters, self.side, self.side))
+        inputs2d = inputs.reshape(
+                (batch_size, self.n_in_filters, self.side, self.side))
+        x_zrh = T.nnet.conv2d(
+                inputs2d,
+                self._w,
+                input_shape=(None, self.n_in_filters, self.side, self.side),
+                filter_shape=(self.n_filters*3, self.n_in_filters,
+                              self.filter_dims, self.filter_dims),
+                border_mode='half',
+                subsample=(self.stride, self.stride),
+                filter_flip=True) + self._b.dimshuffle('x',0,'x','x')
+        u_zr = T.nnet.conv2d(
+                state2d,
+                self._u[:self.n_filters*2,:,:,:],
+                input_shape=(None, self.n_filters, self.side, self.side),
+                filter_shape=(self.n_filters*2, self.n_filters,
+                              self.filter_dims, self.filter_dims),
+                border_mode='half',
+                subsample=(self.stride, self.stride),
+                filter_flip=True)
+        zr = T.nnet.sigmoid(x_zrh[:,:self.n_filters*2,:,:] + u_zr)
+        z = zr[:,:self.n_filters,:,:]
+        r = zr[:,self.n_filters:,:,:]
+        x_h = x_zrh[:,self.n_filters*2:,:,:]
+        u_h = T.nnet.conv2d(
+                r * state2d,
+                self._u[self.n_filters*2:,:,:,:],
+                input_shape=(None, self.n_filters, self.side, self.side),
+                filter_shape=(self.n_filters, self.n_filters,
+                              self.filter_dims, self.filter_dims),
+                border_mode='half',
+                subsample=(self.stride, self.stride),
+                filter_flip=True)
+        hh = T.tanh(x_h + u_h)
+        h = z*state2d + (1.0-z)*hh
+        return h.reshape(state.shape)
+
+
 class StackedRNN(Model):
     """Stacked recurrent unit of a specified type.
     
