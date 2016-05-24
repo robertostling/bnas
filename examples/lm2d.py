@@ -2,8 +2,8 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, IRNN, GRU, GRU2D, BatchNormalization
-from bnas.optimize import Adam
+from bnas.model import Model, Linear, GRU2D
+from bnas.optimize import Adam, Nesterov
 from bnas.init import Gaussian, Orthogonal, Constant
 from bnas.regularize import L2
 from bnas.utils import expand_to_batch
@@ -132,20 +132,18 @@ if __name__ == '__main__':
     # Create the model.
     outputs = T.lmatrix('outputs')
     outputs_mask = T.bmatrix('outputs_mask')
-    lm = LanguageModel('lm', 32, 8, 16, n_symbols)
+    lm = LanguageModel('lm', 32, 16, 16, n_symbols)
 
     if os.path.exists(model_filename):
         with open(model_filename, 'rb') as f:
             lm.load(f)
             print('Load model from %s' % model_filename)
     else:
-        # Create an Adam optimizer instance, manually specifying which
-        # parameters to optimize, which loss function to use, which inputs
-        # (none) and outputs are used for the model. We also specify the
-        # gradient clipping threshold.
-        optimizer = Adam(lm.parameters(), lm.loss(outputs, outputs_mask),
-                         [], [outputs, outputs_mask],
-                         grad_max_norm=5.0)
+        optimizer = Nesterov(
+                lm.parameters(), lm.loss(outputs, outputs_mask),
+                [], [outputs, outputs_mask],
+                learning_rate=0.01,
+                grad_max_norm=5.0)
 
         # Compile a function to compute cross-entropy of a batch.
         cross_entropy = theano.function(
@@ -159,7 +157,7 @@ if __name__ == '__main__':
         # Get one batch of testing data, encoded as a masked matrix.
         test_outputs, test_outputs_mask = mask_sequences(
                 encoded[:test_size], max_length)
-        for i in range(1):
+        for i in range(2):
             for j in range(test_size, len(encoded), batch_size):
                 # Create one training batch
                 batch = encoded[j:j+batch_size]
