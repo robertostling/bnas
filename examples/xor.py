@@ -13,7 +13,7 @@ class MLP(Model):
 
         self.add(Linear('hidden', 2, 8,
                         use_bias=False, w_regularizer=L2(0.001)))
-        self.add(BatchNormalization('hidden_bn', (8,)))
+        self.add(BatchNormalization('hidden_bn', (None, 8)))
         self.add(Linear('output', 8, 1))
 
     def loss(self, inputs, outputs):
