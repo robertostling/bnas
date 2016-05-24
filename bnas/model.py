@@ -13,6 +13,8 @@ import pickle
 
 import numpy as np
 import theano
+from theano.ifelse import ifelse
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano import tensor as T
 
 from . import init
@@ -286,7 +288,10 @@ class Linear(Model):
 
 
 class Conv1D(Model):
-    """1D convolution layer with linear activations."""
+    """1D convolution layer with linear activations.
+
+    The input shape is assumed to be (batch_size, length, dims).
+    """
 
     def __init__(self, name, input_dims, output_dims,
                  filter_dims=3, stride=1,
@@ -684,6 +689,22 @@ class IRNN(Model):
         return T.nnet.relu(h + self._b) if self.use_bias else T.nnet.relu(h)
 
 
+class Dropout(Model):
+    """Dropout layer."""
+
+    def __init__(self, name, shape, dropout):
+        super().__init__(name)
+        self.p = 1.0 - dropout
+        self.shape = shape
+        self.rng = RandomStreams()
+
+    def __call__(self, inputs, training_mode):
+        return ifelse(
+                training_mode,
+                inputs * (self.rng.binomial(inputs.shape) / self.p),
+                inputs)
+
+
 class BatchNormalization(Model):
     """Batch Normalization layer.
 
@@ -691,33 +712,48 @@ class BatchNormalization(Model):
     ----------
     name : str
         Name of layer.
-    shape : tuple
-        Shape of input (and output), excluding minibatch dimension 0.
+    inputs_shape : tuple
+        Shape of the inputs, the batch size may be None (and is ignored).
+    axis : int
+        Axis along which to normalize (e.g. -1 for linear layers, 1 for
+        convolutions following the standard Theano structure).
     gamma_init : function
         Initialization function for gamma parameter, default: Constant(1).
     beta_init : function
         Initialization function for beta parameter, default: Constant(0).
     """
 
-    def __init__(self, name, shape, gamma_init=None, beta_init=None):
+    def __init__(self, name, inputs_shape,
+                 axis=-1, gamma_init=None, beta_init=None, epsilon=1e-6):
         super().__init__(name)
 
-        self.shape = shape
+        self.inputs_shape = inputs_shape
+        self.axis = axis
+        self.epsilon = epsilon
         if gamma_init is None: gamma_init = init.Constant(1.0)
         if beta_init is None: beta_init = init.Constant(0.0)
 
-        self.param('gamma', shape, init_f=gamma_init)
-        self.param('beta', shape, init_f=beta_init)
+        self.param('gamma', inputs_shape[axis], init_f=gamma_init)
+        self.param('beta', inputs_shape[axis], init_f=beta_init)
 
     def __call__(self, inputs, training=True):
+        axes = list(range(len(self.inputs_shape)))
+        del axes[self.axis]
+        broadcast = ['x']*len(self.inputs_shape)
+        broadcast[self.axis] = 0
+
         if training:
-            mean = inputs.mean(axis=0, keepdims=True)
-            std = inputs.std(axis=0, keepdims=True)
-            return T.nnet.bn.batch_normalization(
-                    inputs,
-                    T.shape_padaxis(self._gamma, axis=0),
-                    T.shape_padaxis(self._beta, axis=0),
-                    mean, std)
+            mean = inputs.mean(axis=axes, keepdims=True)
+            std = inputs.std(axis=axes, keepdims=True)
+            normed = (inputs - mean) / (std + self.epsilon)
+            return    (normed * self._gamma.dimshuffle(*broadcast)) \
+                    + self._beta.dimshuffle(*broadcast)
+            # Alternatively, use Theano implementation
+            #return T.nnet.bn.batch_normalization(
+            #        inputs,
+            #        self._gamma.dimshuffle(*broadcast),
+            #        self._beta.dimshuffle(*broadcast),
+            #        mean, std)
         else:
             raise NotImplementedError(
                 'Batch Normalization currently only supports training mode')
