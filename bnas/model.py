@@ -705,56 +705,29 @@ class Dropout(Model):
                 inputs)
 
 
-class BatchNormalization(Model):
-    """Batch Normalization layer.
+class LayerNormalization(Model):
+    """Layer Normalization (Ba, Kiros and Hinton 2016)."""
 
-    Parameters
-    ----------
-    name : str
-        Name of layer.
-    inputs_shape : tuple
-        Shape of the inputs, the batch size may be None (and is ignored).
-    axis : int
-        Axis along which to normalize (e.g. -1 for linear layers, 1 for
-        convolutions following the standard Theano structure).
-    gamma_init : function
-        Initialization function for gamma parameter, default: Constant(1).
-    beta_init : function
-        Initialization function for beta parameter, default: Constant(0).
-    """
-
-    def __init__(self, name, inputs_shape,
-                 axis=-1, gamma_init=None, beta_init=None, epsilon=1e-6):
+    def __init__(self, name, inputs_shape, b_init=None, g_init=None,
+                 axis=-1, epsilon=1e-6):
         super().__init__(name)
 
         self.inputs_shape = inputs_shape
         self.axis = axis
         self.epsilon = epsilon
-        if gamma_init is None: gamma_init = init.Constant(1.0)
-        if beta_init is None: beta_init = init.Constant(0.0)
+        if g_init is None: g_init = init.Constant(1.0)
+        if b_init is None: b_init = init.Constant(0.0)
 
-        self.param('gamma', inputs_shape[axis], init_f=gamma_init)
-        self.param('beta', inputs_shape[axis], init_f=beta_init)
+        self.param('g', inputs_shape[self.axis], init_f=g_init)
+        self.param('b', inputs_shape[self.axis], init_f=b_init)
 
-    def __call__(self, inputs, training=True):
-        axes = list(range(len(self.inputs_shape)))
-        del axes[self.axis]
+    def __call__(self, inputs):
         broadcast = ['x']*len(self.inputs_shape)
         broadcast[self.axis] = 0
 
-        if training:
-            mean = inputs.mean(axis=axes, keepdims=True)
-            std = inputs.std(axis=axes, keepdims=True)
-            normed = (inputs - mean) / (std + self.epsilon)
-            return    (normed * self._gamma.dimshuffle(*broadcast)) \
-                    + self._beta.dimshuffle(*broadcast)
-            # Alternatively, use Theano implementation
-            #return T.nnet.bn.batch_normalization(
-            #        inputs,
-            #        self._gamma.dimshuffle(*broadcast),
-            #        self._beta.dimshuffle(*broadcast),
-            #        mean, std)
-        else:
-            raise NotImplementedError(
-                'Batch Normalization currently only supports training mode')
+        mean = inputs.mean(axis=self.axis, keepdims=True)
+        std = inputs.std(axis=self.axis, keepdims=True)
+        normed = (inputs - mean) / (std + self.epsilon)
+        return    (normed * self._g.dimshuffle(*broadcast)) \
+                + self._b.dimshuffle(*broadcast)
 

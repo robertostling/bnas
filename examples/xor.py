@@ -9,7 +9,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, BatchNormalization, Dropout
+from bnas.model import Model, Linear, LayerNormalization, Dropout
 from bnas.optimize import Adam, SGD
 from bnas.init import Gaussian
 from bnas.regularize import L2
@@ -21,7 +21,7 @@ class MLP(Model):
 
         self.add(Linear('hidden', 2, 8,
                         use_bias=False, w_regularizer=L2(0.001)))
-        self.add(BatchNormalization('hidden_bn', (None, 8)))
+        self.add(LayerNormalization('hidden_ln', (None, 8)))
         self.add(Dropout('hidden_do', 0.1))
         self.add(Linear('output', 8, 1))
 
@@ -31,12 +31,15 @@ class MLP(Model):
 
     def __call__(self, inputs):
         return T.nnet.sigmoid(self.output(
-            self.hidden_do(T.tanh(self.hidden_bn(self.hidden(inputs))))))
+            self.hidden_do(T.tanh(self.hidden_ln(self.hidden(inputs))))))
 
 
 if __name__ == '__main__':
     x = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=theano.config.floatX)
     y = np.array([[0],    [1],    [1],    [0]],    dtype=theano.config.floatX)
+
+    x = x*0.8 + 0.1
+    y = y*0.8 + 0.1
 
     inputs = T.matrix('inputs')
     outputs = T.matrix('outputs')
