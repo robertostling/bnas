@@ -18,7 +18,7 @@ from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano import tensor as T
 
 from . import init
-
+from .fun import train_mode
 
 class Model:
     """Base class for neural network models.
@@ -692,16 +692,16 @@ class IRNN(Model):
 class Dropout(Model):
     """Dropout layer."""
 
-    def __init__(self, name, shape, dropout):
+    def __init__(self, name, dropout):
         super().__init__(name)
         self.p = 1.0 - dropout
-        self.shape = shape
         self.rng = RandomStreams()
 
-    def __call__(self, inputs, training_mode):
+    def __call__(self, inputs):
         return ifelse(
-                training_mode,
-                inputs * (self.rng.binomial(inputs.shape) / self.p),
+                train_mode,
+                inputs * (self.rng.binomial(inputs.shape, p=self.p).astype(
+                    theano.config.floatX) / self.p),
                 inputs)
 
 

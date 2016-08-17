@@ -132,7 +132,7 @@ if __name__ == '__main__':
     # Create the model.
     outputs = T.lmatrix('outputs')
     outputs_mask = T.bmatrix('outputs_mask')
-    lm = LanguageModel('lm', 32, 16, 16, n_symbols)
+    lm = LanguageModel('lm', 32, 16, 32, n_symbols)
 
     if os.path.exists(model_filename):
         with open(model_filename, 'rb') as f:

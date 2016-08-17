@@ -10,6 +10,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
+from .fun import function
 
 class Optimizer:
     """Base class for optimizers.
@@ -47,10 +48,10 @@ class Optimizer:
             a = T.switch(norm < self.grad_max_norm, 1, self.grad_max_norm/norm)
             self.grad = OrderedDict((name, a*g)
                                     for name, g in self.raw_grad.items())
-        
-        self.get_loss = theano.function(
-                self.inputs+self.outputs,
-                self.loss)
+
+        #self.get_loss = function(
+        #        self.inputs+self.outputs,
+        #        self.loss)
 
     def step(self, *args):
         """Take one optimization step.
@@ -117,9 +118,11 @@ class SGD(Optimizer):
                    for param, grad
                    in zip(self.params.values(), self.grad.values())]
 
-        self.step1 = theano.function(
+        self.step1 = function(
                 self.inputs+self.outputs+[learning_rate],
                 self.loss,
+                default_mode=1,
+                name='SGD_step1',
                 updates=updates)
 
     def step(self, *args):
@@ -166,11 +169,15 @@ class Nesterov(Optimizer):
         self.step1 = theano.function(
                 inputs=[momentum],
                 outputs=[],
+                name='Nesterov_step1',
                 updates=updates1)
 
-        self.step2 = theano.function(
-                inputs=self.inputs+self.outputs+[learning_rate, momentum],
+        self.step2 = function(
+                inputs=self.inputs+self.outputs+[
+                    learning_rate, momentum],
+                default_mode=1,
                 outputs=self.loss,
+                name='Nesterov_step2',
                 updates=updates2)
 
     def step(self, *args):
@@ -214,9 +221,12 @@ class RMSProp(Optimizer):
         updates = [(p, p+d) for p,d in zip(self.params.values(), ds)] \
                 + list(zip(squares.values(), new_squares)) \
 
-        self.step1 = theano.function(
-                inputs=self.inputs+self.outputs+[learning_rate, decay],
+        self.step1 = function(
+                inputs=self.inputs+self.outputs+[
+                    learning_rate, decay],
+                default_mode=1,
                 outputs=self.loss,
+                name='RMSProp_step1',
                 updates=updates)
 
     def step(self, *args):
@@ -272,9 +282,11 @@ class Adam(Optimizer):
                 + [(beta_1_t, beta_1_t * beta_1),
                    (beta_2_t, beta_2_t * beta_2)]
 
-        self.step1 = theano.function(
+        self.step1 = function(
                 inputs=self.inputs+self.outputs+[learning_rate],
                 outputs=self.loss,
+                default_mode=1,
+                name='Adam_step1',
                 updates=updates)
 
     def step(self, *args):

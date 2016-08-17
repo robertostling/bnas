@@ -1,11 +1,19 @@
+"""Example using an overly complex MLP to learn the XOR function.
+
+The point of this is to demonstrate and test some of the more advanced
+functions, like normalization and dropout layers, which don't really make
+sense with a network this simple.
+"""
+
 import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, BatchNormalization
+from bnas.model import Model, Linear, BatchNormalization, Dropout
 from bnas.optimize import Adam, SGD
 from bnas.init import Gaussian
 from bnas.regularize import L2
+from bnas.fun import function
 
 class MLP(Model):
     def __init__(self, name, **kwargs):
@@ -14,6 +22,7 @@ class MLP(Model):
         self.add(Linear('hidden', 2, 8,
                         use_bias=False, w_regularizer=L2(0.001)))
         self.add(BatchNormalization('hidden_bn', (None, 8)))
+        self.add(Dropout('hidden_do', 0.1))
         self.add(Linear('output', 8, 1))
 
     def loss(self, inputs, outputs):
@@ -22,7 +31,7 @@ class MLP(Model):
 
     def __call__(self, inputs):
         return T.nnet.sigmoid(self.output(
-            T.tanh(self.hidden_bn(self.hidden(inputs)))))
+            self.hidden_do(T.tanh(self.hidden_bn(self.hidden(inputs))))))
 
 
 if __name__ == '__main__':
@@ -43,6 +52,6 @@ if __name__ == '__main__':
 
     print('Last loss = %g. Predictions vs targets:' % loss)
 
-    predict = theano.function([inputs], xor(inputs))
+    predict = function([inputs], xor(inputs), name='XOR_predict')
     print(np.hstack([predict(x), y]))
 
