@@ -2,27 +2,32 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, IRNN
+from bnas.model import Model, Linear, LSTM, GRU, LayerNormalization
 from bnas.optimize import Adam
 from bnas.init import Gaussian, Orthogonal, Constant
-from bnas.regularize import L2, StateNorm
+from bnas.regularize import L2
 from bnas.utils import expand_to_batch
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import encode_sequences, mask_sequences
 from bnas.search import beam, greedy
 
+GateType = LSTM
 
 class Gate(Model):
     def __init__(self, name, embedding_dims, state_dims, n_symbols, **kwargs):
         super().__init__(name, **kwargs)
 
+        states_dims = state_dims*2 if GateType is LSTM else state_dims
+        self.state_dims = state_dims
+        self.states_dims = states_dims
         # Define the parameters required for a recurrent transition using
-        # iRNN units, taking a character embedding as input and outputting 
+        # GRU/LSTM units, taking a character embedding as input and outputting 
         # (through a fully connected tanh layer) a distribution over symbols.
         # The embeddings are shared between the input and output.
         self.param('embeddings', (n_symbols, embedding_dims),
                    init_f=Gaussian(fan_in=embedding_dims))
-        self.add(IRNN('transition', embedding_dims, state_dims))
+        self.add(GateType('transition', embedding_dims, states_dims,
+                 use_layernorm='full'))
         self.add(Linear('hidden', state_dims, embedding_dims))
         self.add(Linear('emission', embedding_dims, n_symbols,
                         w=self._embeddings.T))
@@ -31,21 +36,28 @@ class Gate(Model):
         # Construct the Theano symbol expressions for the new state and the
         # output predictions, given the embedded previous symbol and the
         # previous state.
-        return (self.transition(last, state),
-                T.nnet.softmax(self.emission(T.tanh(self.hidden(state)))))
+        new_state = self.transition(last, state)
+        h = new_state
+        if self.state_dims != self.states_dims:
+            h = new_state[:, :self.state_dims]
+        return (new_state,
+                T.nnet.softmax(self.emission(T.tanh(self.hidden(h)))))
 
 
 class LanguageModel(Model):
     def __init__(self, name, embedding_dims, state_dims, n_symbols, **kwargs):
         super().__init__(name, **kwargs)
 
+        states_dims = state_dims*2 if GateType is LSTM else state_dims
         self.state_dims = state_dims
+        self.states_dims = states_dims
         self.n_symbols = n_symbols
 
         # Import the parameters of the recurrence into the main model.
         self.add(Gate('gate', embedding_dims, state_dims, n_symbols))
         # Add a learnable parameter for the initial state.
-        self.param('state0', (state_dims,), init_f=Gaussian(fan_in=state_dims))
+        self.param('state0', (states_dims,),
+                   init_f=Gaussian(fan_in=states_dims))
 
         # Compile a function for a single recurrence step, this is used during
         # decoding (but not during training).
@@ -85,15 +97,15 @@ class LanguageModel(Model):
         state_seq, symbol_seq = self(outputs, outputs_mask)
         batch_size = outputs.shape[1]
         # Use hidden state norm regularization.
-        state_norm = StateNorm(50.0)(
-                T.concatenate([
-                    expand_to_batch(self._state0, batch_size
-                        ).dimshuffle('x',0,1),
-                    state_seq],
-                    axis=0), outputs_mask)
+        #state_norm = StateNorm(50.0)(
+        #        T.concatenate([
+        #            expand_to_batch(self._state0, batch_size
+        #                ).dimshuffle('x',0,1),
+        #            state_seq],
+        #            axis=0), outputs_mask)
         xent = batch_sequence_crossentropy(
                 symbol_seq, outputs[1:], outputs_mask[1:])
-        return loss + xent + state_norm
+        return loss + xent # + state_norm
 
     def search(self, batch_size, start_symbol, stop_symbol,
                max_length, min_length):
@@ -136,7 +148,7 @@ if __name__ == '__main__':
     # Create the model.
     outputs = T.lmatrix('outputs')
     outputs_mask = T.bmatrix('outputs_mask')
-    lm = LanguageModel('lm', 32, 256, n_symbols)
+    lm = LanguageModel('lm', 32, 1024, n_symbols)
 
     if os.path.exists(model_filename):
         with open(model_filename, 'rb') as f:

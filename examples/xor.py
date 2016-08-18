@@ -20,7 +20,7 @@ class MLP(Model):
         super().__init__(name, **kwargs)
 
         self.add(Linear('hidden', 2, 8,
-                        use_bias=False, w_regularizer=L2(0.001)))
+                        use_bias=True, w_regularizer=L2(0.001)))
         self.add(LayerNormalization('hidden_ln', (None, 8)))
         self.add(Dropout('hidden_do', 0.1))
         self.add(Linear('output', 8, 1))

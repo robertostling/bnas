@@ -19,6 +19,7 @@ from theano import tensor as T
 
 from . import init
 from .fun import train_mode
+#from .utils import concatenate
 
 class Model:
     """Base class for neural network models.
@@ -426,7 +427,7 @@ class GRU2D(Model):
 
 class StackedRNN(Model):
     """Stacked recurrent unit of a specified type.
-    
+
     Parameters
     ----------
     name : str
@@ -478,7 +479,8 @@ class LSTM(Model):
     def __init__(self, name, input_dims, output_dims,
                  w=None, w_init=None, w_regularizer=None,
                  u=None, u_init=None, u_regularizer=None,
-                 b=None, b_init=None, b_regularizer=None):
+                 b=None, b_init=None, b_regularizer=None,
+                 use_layernorm=False):
         super().__init__(name)
 
         if output_dims % 2 != 0:
@@ -488,6 +490,7 @@ class LSTM(Model):
         self.input_dims = input_dims
         self.output_dims = output_dims
         self.state_dims = state_dims
+        self.use_layernorm = use_layernorm
 
         if w_init is None: w_init = init.Concatenated([
             init.Gaussian(fan_in=input_dims),
@@ -517,18 +520,35 @@ class LSTM(Model):
         self.regularize(self._u, u_regularizer)
         self.regularize(self._b, b_regularizer)
 
+        if use_layernorm == 'full':
+            self.add(LayerNormalization('ln_i', (None, state_dims)))
+            self.add(LayerNormalization('ln_f', (None, state_dims)))
+            self.add(LayerNormalization('ln_o', (None, state_dims)))
+            self.add(LayerNormalization('ln_c', (None, state_dims)))
+        if use_layernorm:
+            self.add(LayerNormalization('ln_h', (None, state_dims)))
+
     def __call__(self, inputs, state):
         h_tm1 = state[:, :self.state_dims]
         c_tm1 = state[:, self.state_dims:]
-        x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u) \
-          + self._b.dimshuffle('x', 0)
-        i = T.nnet.sigmoid(x[:,0*self.state_dims:1*self.state_dims])
-        f = T.nnet.sigmoid(x[:,1*self.state_dims:2*self.state_dims])
-        o = T.nnet.sigmoid(x[:,2*self.state_dims:3*self.state_dims])
-        c = T.tanh(        x[:,3*self.state_dims:4*self.state_dims])
+        x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
+        x = x + self._b.dimshuffle('x', 0)
+        if self.use_layernorm == 'full':
+            i = T.nnet.sigmoid(self.ln_i(
+                x[:,0*self.state_dims:1*self.state_dims]))
+            f = T.nnet.sigmoid(self.ln_f(
+                x[:,1*self.state_dims:2*self.state_dims]))
+            o = T.nnet.sigmoid(self.ln_o(
+                x[:,2*self.state_dims:3*self.state_dims]))
+            c = T.tanh(        self.ln_c(
+                x[:,3*self.state_dims:4*self.state_dims]))
+        else:
+            i = T.nnet.sigmoid(x[:,0*self.state_dims:1*self.state_dims])
+            f = T.nnet.sigmoid(x[:,1*self.state_dims:2*self.state_dims])
+            o = T.nnet.sigmoid(x[:,2*self.state_dims:3*self.state_dims])
+            c = T.tanh(        x[:,3*self.state_dims:4*self.state_dims])
         c_t = f*c_tm1 + i*c
-        h_t = o*T.tanh(c_t)
-
+        h_t = o*T.tanh(self.ln_h(c_t) if self.use_layernorm else c_t)
         return T.concatenate([h_t, c_t], axis=-1)
 
 
@@ -538,12 +558,14 @@ class GRU(Model):
     def __init__(self, name, input_dims, output_dims,
                  w=None, w_init=None, w_regularizer=None,
                  u=None, u_init=None, u_regularizer=None,
-                 b=None, b_init=None, b_regularizer=None):
+                 b=None, b_init=None, b_regularizer=None,
+                 use_layernorm=False):
         super().__init__(name)
 
         state_dims = output_dims
         self.input_dims = input_dims
         self.state_dims = state_dims
+        self.use_layernorm = use_layernorm
 
         if w_init is None: w_init = init.Concatenated([
             init.Gaussian(fan_in=input_dims),
@@ -557,10 +579,7 @@ class GRU(Model):
             init.Orthogonal()],
             axis=1)
 
-        if b_init is None: b_init = init.Concatenated([
-            init.Constant(0.0),
-            init.Constant(0.0),
-            init.Constant(0.0)])
+        if b_init is None: b_init = init.Constant(0.0)
 
         self.param('w', (input_dims, state_dims*3), init_f=w_init, value=w)
         self.param('u', (state_dims, state_dims*3), init_f=u_init, value=u)
@@ -570,15 +589,35 @@ class GRU(Model):
         self.regularize(self._u, u_regularizer)
         self.regularize(self._b, b_regularizer)
 
+        # TODO: the layernorm application does not seem very good compared to
+        # the LSTM case.
+        if use_layernorm:
+            self.add(LayerNormalization('ln_h', (None, state_dims*1)))
+        if use_layernorm == 'full':
+            self.add(LayerNormalization('ln_h_z', (None, state_dims*1)))
+            self.add(LayerNormalization('ln_h_r', (None, state_dims*1)))
+            self.add(LayerNormalization('ln_h_h', (None, state_dims*1)))
+
     def __call__(self, inputs, state):
-        x_zrh = T.dot(inputs, self._w) + self._b.dimshuffle('x', 0)
-        zr = T.nnet.sigmoid(x_zrh[:, :self.state_dims*2] +
-                            T.dot(state, self._u[:, :self.state_dims*2]))
-        z = zr[:, :self.state_dims]
-        r = zr[:, self.state_dims:]
+        if self.use_layernorm:
+            state = self.ln_h(state)
+        b = self._b.dimshuffle('x', 0)
+        x_zrh = T.dot(inputs, self._w)
+        h_zrh = T.dot(state, self._u)
+        x_z = x_zrh[:, :self.state_dims]
+        h_z = h_zrh[:, :self.state_dims]
+        x_r = x_zrh[:, self.state_dims:self.state_dims*2]
+        h_r = h_zrh[:, self.state_dims:self.state_dims*2]
         x_h = x_zrh[:, self.state_dims*2:]
-        hh = T.tanh(x_h + T.dot(r * state, self._u[:, self.state_dims*2:]))
-        h = z*state + (1.0-z)*hh
+        h_h = h_zrh[:, self.state_dims*2:]
+        if self.use_layernorm == 'full':
+           h_z = self.ln_h_z(h_z)
+           h_r = self.ln_h_r(h_r)
+           h_h = self.ln_h_h(h_h)
+        z = T.nnet.sigmoid(x_z + h_z + b[:, :self.state_dims])
+        r = T.nnet.sigmoid(x_r + h_r + b[:, self.state_dims:self.state_dims*2])
+        hh = T.tanh(x_h + r*h_h + b[:, self.state_dims*2:]) 
+        h = (1.0-z)*state + z*hh
         return h
 
 
@@ -708,18 +747,15 @@ class Dropout(Model):
 class LayerNormalization(Model):
     """Layer Normalization (Ba, Kiros and Hinton 2016)."""
 
-    def __init__(self, name, inputs_shape, b_init=None, g_init=None,
-                 axis=-1, epsilon=1e-6):
+    def __init__(self, name, inputs_shape, g_init=None, axis=-1, epsilon=1e-6):
         super().__init__(name)
 
         self.inputs_shape = inputs_shape
         self.axis = axis
         self.epsilon = epsilon
         if g_init is None: g_init = init.Constant(1.0)
-        if b_init is None: b_init = init.Constant(0.0)
 
-        self.param('g', inputs_shape[self.axis], init_f=g_init)
-        self.param('b', inputs_shape[self.axis], init_f=b_init)
+        self.param('g', (inputs_shape[self.axis],), init_f=g_init)
 
     def __call__(self, inputs):
         broadcast = ['x']*len(self.inputs_shape)
@@ -727,7 +763,7 @@ class LayerNormalization(Model):
 
         mean = inputs.mean(axis=self.axis, keepdims=True)
         std = inputs.std(axis=self.axis, keepdims=True)
+        #std = T.sqrt(T.sqr(inputs - mean).sum(axis=self.axis, keepdims=True))
         normed = (inputs - mean) / (std + self.epsilon)
-        return    (normed * self._g.dimshuffle(*broadcast)) \
-                + self._b.dimshuffle(*broadcast)
+        return normed * self._g.dimshuffle(*broadcast)
 
