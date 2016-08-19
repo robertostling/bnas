@@ -1,3 +1,4 @@
+from time import time
 import numpy as np
 import theano
 from theano import tensor as T
@@ -277,15 +278,18 @@ if __name__ == '__main__':
                             *test_loss/(np.log(2))),
                         flush=True)
 
+                t0 = time()
                 loss = optimizer.step(inputs, inputs_mask,
                                       outputs, outputs_mask)
+                t = time() - t0
 
                 if np.isnan(loss):
                     print('NaN at iteration %d!' % (i+1))
                     break
-                print('Batch %d:%d: train: %.3f b/char' % (
+                print('Batch %d:%d: train: %.3f b/char (%.3f s)' % (
                     i+1, j+1,
-                    (batch_size/outputs_mask[1:].sum())*loss/np.log(2)),
+                    (batch_size/outputs_mask[1:].sum())*loss/np.log(2),
+                    t),
                     flush=True)
 
                 n_batches += 1
@@ -296,7 +300,7 @@ if __name__ == '__main__':
                             trg_index['<S>'], trg_index['</S>'], 128, 32)
 
                     for src_sent, sent, score in zip(
-                            test_inputs.T, pred[0].T, scores[0]):
+                            test_inputs.T, pred[-1].T, scores[-1]):
                         print(''.join(
                             src_symbols[x] for x in src_sent.flatten()
                             if x != 1))
