@@ -19,7 +19,7 @@ from theano import tensor as T
 
 from . import init
 from .fun import train_mode
-#from .utils import concatenate
+
 
 class Model:
     """Base class for neural network models.
@@ -473,13 +473,80 @@ class StackedRNN(Model):
         return T.concatenate(outputs, axis=-1)
 
 
+class RHN(Model):
+    """Recurrent Highway Network."""
+
+    def __init__(self, name, input_dims, output_dims,
+                 depth=4,
+                 w=None, w_init=None, w_regularizer=None,
+                 us=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None,
+                 use_layernorm=False):
+        super().__init__(name)
+
+        state_dims = output_dims
+
+        self.depth = depth
+        self.state_dims = state_dims
+        self.use_layernorm = use_layernorm
+
+        if w_init is None: w_init = init.Concatenated([
+            init.Gaussian(fan_in=input_dims),
+            init.Gaussian(fan_in=input_dims)],
+            axis=1)
+
+        if u_init is None: u_init = init.Concatenated([
+            init.Orthogonal(),
+            init.Orthogonal()],
+            axis=1)
+
+        if b_init is None: b_init = init.Concatenated([
+            init.Constant(0.0),
+            init.Constant(1.0)])
+
+        self.param('w', (input_dims, state_dims*2), init_f=w_init, value=w)
+        for i in range(depth):
+            u = None if us is None else us[i]
+            self.param('u%d'%i, (state_dims, state_dims*2),
+                       init_f=u_init, value=u)
+        self.param('b', (state_dims*2,), init_f=b_init, value=b)
+
+        self.regularize(self._w, w_regularizer)
+        for i in range(depth):
+            self.regularize(getattr(self, '_u%d'%i), u_regularizer)
+        self.regularize(self._b, b_regularizer)
+
+        if use_layernorm:
+            for i in range(depth):
+                self.add(LayerNormalization('ln_h%d'%i, (None, state_dims)))
+
+    def __call__(self, inputs, state):
+        s = state
+        for i in range(self.depth):
+            if self.use_layernorm:
+                s = getattr(self, 'ln_h%d'%i)(s)
+            ht = T.dot(s, getattr(self, '_u%d'%i)) + self._b
+            if i == 0:
+                ht = ht + T.dot(inputs, self._w)
+            h = T.tanh(ht[:,:self.state_dims])
+            t = T.nnet.sigmoid(ht[:,self.state_dims:])
+            c = 1.0 - t
+            s = s*t + h*c
+        return s
+
+
 class LSTM(Model):
-    """Long Short-Term Memory."""
+    """Long Short-Term Memory.
+
+    Note that both states are merged in the same vector, so output_dims must
+    be even.
+    """
 
     def __init__(self, name, input_dims, output_dims,
                  w=None, w_init=None, w_regularizer=None,
                  u=None, u_init=None, u_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
+                 dropout=0,
                  use_layernorm=False):
         super().__init__(name)
 
@@ -491,6 +558,10 @@ class LSTM(Model):
         self.output_dims = output_dims
         self.state_dims = state_dims
         self.use_layernorm = use_layernorm
+        self.dropout = dropout
+
+        if self.dropout:
+            self.rng = RandomStreams()
 
         if w_init is None: w_init = init.Concatenated([
             init.Gaussian(fan_in=input_dims),
@@ -528,7 +599,29 @@ class LSTM(Model):
         if use_layernorm:
             self.add(LayerNormalization('ln_h', (None, state_dims)))
 
-    def __call__(self, inputs, state):
+    def dropout_masks(self, *shapes):
+        if self.dropout:
+            p = 1.0-self.dropout
+            return [
+                self.rng.binomial(shape, p=p).astype(theano.config.floatX) / p
+                for shape in shapes]
+        else:
+            return []
+
+    def __call__(self, inputs, state,
+                 input_dropout_mask=None, state_dropout_mask=None,
+                 *non_sequences):
+        if self.dropout:
+            if not input_dropout_mask is None:
+                inputs = ifelse(
+                        train_mode,
+                        inputs * input_dropout_mask,
+                        inputs)
+            if not state_dropout_mask is None:
+                state = ifelse(
+                        train_mode,
+                        state * state_dropout_mask,
+                        state)
         h_tm1 = state[:, :self.state_dims]
         c_tm1 = state[:, self.state_dims:]
         x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
@@ -549,7 +642,8 @@ class LSTM(Model):
             c = T.tanh(        x[:,3*self.state_dims:4*self.state_dims])
         c_t = f*c_tm1 + i*c
         h_t = o*T.tanh(self.ln_h(c_t) if self.use_layernorm else c_t)
-        return T.concatenate([h_t, c_t], axis=-1)
+        state = T.concatenate([h_t, c_t], axis=-1)
+        return state
 
 
 class GRU(Model):
@@ -590,7 +684,7 @@ class GRU(Model):
         self.regularize(self._b, b_regularizer)
 
         # TODO: the layernorm application does not seem very good compared to
-        # the LSTM case.
+        # the LSTM case, at least not for char LM. Try other variants.
         if use_layernorm:
             self.add(LayerNormalization('ln_h', (None, state_dims*1)))
         if use_layernorm == 'full':
@@ -763,7 +857,6 @@ class LayerNormalization(Model):
 
         mean = inputs.mean(axis=self.axis, keepdims=True)
         std = inputs.std(axis=self.axis, keepdims=True)
-        #std = T.sqrt(T.sqr(inputs - mean).sum(axis=self.axis, keepdims=True))
         normed = (inputs - mean) / (std + self.epsilon)
         return normed * self._g.dimshuffle(*broadcast)
 
