@@ -31,7 +31,7 @@ class Gate(Model):
         self.param('embeddings', (n_symbols, embedding_dims),
                    init_f=Gaussian(fan_in=embedding_dims))
         self.add(GateType('transition', embedding_dims, states_dims,
-                 use_layernorm=False, dropout=0.3))
+                 use_layernorm=True, dropout=0.3))
         self.add(Linear('hidden', state_dims, embedding_dims))
         self.add(Linear('emission', embedding_dims, n_symbols,
                         w=self._embeddings.T))
@@ -83,7 +83,8 @@ class LanguageModel(Model):
                 outputs_info=[state0, None],
                 non_sequences=
                     self.gate.transition.dropout_masks(
-                        embedded_outputs.shape[1:], state0.shape) +
+                        embedded_outputs.shape[1:],
+                        state0[:, :self.state_dims].shape) +
                     self.gate.parameters_list())
         return state_seq, symbol_seq
 

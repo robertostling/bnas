@@ -609,21 +609,21 @@ class LSTM(Model):
             return []
 
     def __call__(self, inputs, state,
-                 input_dropout_mask=None, state_dropout_mask=None,
+                 input_dropout_mask=None, h_dropout_mask=None,
                  *non_sequences):
+        h_tm1 = state[:, :self.state_dims]
+        c_tm1 = state[:, self.state_dims:]
         if self.dropout:
             if not input_dropout_mask is None:
                 inputs = ifelse(
                         train_mode,
                         inputs * input_dropout_mask,
                         inputs)
-            if not state_dropout_mask is None:
-                state = ifelse(
+            if not h_dropout_mask is None:
+                h_tm1 = ifelse(
                         train_mode,
-                        state * state_dropout_mask,
-                        state)
-        h_tm1 = state[:, :self.state_dims]
-        c_tm1 = state[:, self.state_dims:]
+                        h_tm1 * h_dropout_mask,
+                        h_tm1)
         x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
         x = x + self._b.dimshuffle('x', 0)
         if self.use_layernorm == 'full':
