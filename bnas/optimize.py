@@ -4,6 +4,7 @@ This module provides different algorithms for optimization through (typically)
 stochastic mini-batch gradient descent.
 """
 
+import random
 from collections import OrderedDict
 
 import numpy as np
@@ -11,6 +12,42 @@ import theano
 from theano import tensor as T
 
 from .fun import function
+
+
+def iterate_batches(data, batch_size, len_f=None, n_batches=16):
+    """Iterate over minibatches.
+
+    Arguments
+    ---------
+    data : list of data items (typically example/label pairs)
+        Data set to iterate over
+    batch_size : int
+        Minibatch size. If len(data) is at above this, each batch is
+        guaranteed to be of exactly size batch_size.
+    len_f : function
+        If this is defined, it should be a function mapping items from the
+        data array to some ordered type. n_batches will be randomly
+        sampled at a time, the examples inside sorted and cut up into batches.
+        This is useful for variable-length sequences, so that batches aren't
+        too sparse.
+    n_batches : int
+    """
+    order = list(range(len(data)))
+    random.shuffle(order)
+    if len(data) <= batch_size:
+        yield data
+    elif len_f is None:
+        for i in range(0, len(data) - len(data)%batch_size, batch_size):
+            yield [data[j] for j in order[i:i+batch_size]]
+    else:
+        for i in range(0, len(data), batch_size*n_batches):
+            if i > len(data) - batch_size: return
+            subset = [data[j] for j in order[i:i+batch_size*n_batches]]
+            subset.sort(key=len_f)
+            useful_length = len(subset) - len(subset)%batch_size
+            for j in range(0, useful_length, batch_size):
+                yield subset[j:j+batch_size]
+
 
 class Optimizer:
     """Base class for optimizers.
