@@ -406,10 +406,12 @@ class Dropout(Model):
         This can be used for dropout in recurrent layers, where a fixed mask
         is passed through the non_sequences argument to theano.scan().
         """
+        if self.p == 1: return T.ones(shape)
         m = self.rng.binomial(shape, p=self.p).astype(theano.config.floatX)
         return m / self.p
 
     def __call__(self, inputs):
+        if self.p == 1: return inputs
         return ifelse(
                 train_mode,
                 inputs * (self.rng.binomial(inputs.shape, p=self.p).astype(

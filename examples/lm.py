@@ -38,15 +38,12 @@ class Gate(Model):
                         config['embedding_dims'], config['n_symbols'],
                         w=self._embeddings.T))
 
-    def __call__(self, last, h_tm1, c_tm1, last_mask=None, h_mask=None,
+    def __call__(self, last, h_tm1, c_tm1, last_mask, h_mask,
                  *non_sequences):
         # Construct the Theano symbol expressions for the new state and the
         # output predictions, given the embedded previous symbol and the
         # previous state.
-        h_t, c_t = self.transition(
-                last if last_mask is None else last * last_mask,
-                h_tm1 if h_mask is None else h_tm1 * h_mask,
-                c_tm1)
+        h_t, c_t = self.transition(last * last_mask, h_tm1 * h_mask, c_tm1)
         return (h_t, c_t,
                 T.nnet.softmax(self.emission(T.tanh(self.hidden(h_t)))))
 
@@ -65,13 +62,17 @@ class LanguageModel(Model):
         self.param('c_0', (config['state_dims'],),
                    init_f=Gaussian(fan_in=config['state_dims']))
 
-        if config['dropout']:
-            self.add(Dropout('gate_dropout', config['dropout']))
+        self.add(Dropout('gate_dropout', config['dropout']))
 
         # Compile a function for a single recurrence step, this is used during
         # decoding (but not during training).
-        self.step = self.gate.compile(
-                T.matrix('last'), T.matrix('h_tm1'), T.matrix('c_tm1'))
+        sym_last = T.matrix('last')
+        sym_h_tm1, sym_c_tm1 = T.matrix('h_tm1'), T.matrix('c_tm1')
+        self.step = function(
+                [sym_last, sym_h_tm1, sym_c_tm1],
+                self.gate(
+                    sym_last, sym_h_tm1, sym_c_tm1,
+                    T.ones_like(sym_last), T.ones_like(sym_h_tm1)))
 
     def __call__(self, outputs, outputs_mask):
         # Construct the Theano symbolic expression for the state and output
@@ -82,14 +83,14 @@ class LanguageModel(Model):
                          * outputs_mask.dimshuffle(0,1,'x')
         h_0 = expand_to_batch(self._h_0, batch_size)
         c_0 = expand_to_batch(self._c_0, batch_size)
+        dropout_masks = [
+                self.gate_dropout.mask(embedded_outputs.shape[1:]),
+                self.gate_dropout.mask(h_0.shape)]
         (h_seq, c_seq, symbol_seq), _ = theano.scan(
                 fn=self.gate,
                 sequences=[{'input': embedded_outputs, 'taps': [-1]}],
                 outputs_info=[h_0, c_0, None],
-                non_sequences=[
-                        self.gate_dropout.mask(embedded_outputs.shape[1:]),
-                        self.gate_dropout.mask(h_0.shape)] + \
-                    self.gate.parameters_list())
+                non_sequences=dropout_masks + self.gate.parameters_list())
         return h_seq, symbol_seq
 
     def cross_entropy(self, outputs, outputs_mask):
@@ -163,16 +164,16 @@ if __name__ == '__main__':
                 'index': index,
                 'embedding_dims': 64,
                 'state_dims': 1024,
-                'layernorm': 'c',
+                'layernorm': False,
                 'dropout': 0.2
                 }
 
         lm = LanguageModel('lm', config)
 
         # Training-specific parameters
-        batch_size = 128
-        test_size = 128
-        max_length = 128
+        batch_size = 64
+        test_size = batch_size
+        max_length = 192
         batch_nr = 0
 
         # Create the model.
@@ -201,7 +202,7 @@ if __name__ == '__main__':
         # Get one batch of testing data, encoded as a masked matrix.
         test_outputs, test_outputs_mask = mask_sequences(test_set, max_length)
 
-        for i in range(1):
+        for i in range(250):
             for batch in iterate_batches(train_set, batch_size, len):
                 outputs, outputs_mask = mask_sequences(batch, max_length)
                 if batch_nr % 10 == 0:
