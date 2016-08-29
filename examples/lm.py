@@ -11,53 +11,20 @@ If model.bin exists, the corpus filename can be left out to generate some
 test sentences.
 """
 
-import random
 import pickle
 
 import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, LSTM, Dropout
+from bnas.model import Model, Linear, LSTMSequence
 from bnas.optimize import Nesterov, iterate_batches
 from bnas.init import Gaussian, Orthogonal, Constant
-from bnas.utils import expand_to_batch
+from bnas.utils import softmax_3d
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import encode_sequences, mask_sequences
 from bnas.search import beam
 from bnas.fun import function
-
-
-class Gate(Model):
-    def __init__(self, name, config):
-        super().__init__(name)
-
-        self.config = config
-
-        # Define the parameters required for a recurrent transition using
-        # LSTM units, taking a character embedding as input and outputting 
-        # (through a fully connected tanh layer) a distribution over symbols.
-        # The embeddings are shared between the input and output.
-        self.param('embeddings',
-                   (config['n_symbols'], config['embedding_dims']),
-                   init_f=Gaussian(fan_in=config['embedding_dims']))
-        self.add(LSTM('transition',
-                      config['embedding_dims'], config['state_dims'],
-                      layernorm=config['layernorm']))
-        self.add(Linear('hidden',
-                        config['state_dims'], config['embedding_dims']))
-        self.add(Linear('emission',
-                        config['embedding_dims'], config['n_symbols'],
-                        w=self._embeddings.T))
-
-    def __call__(self, last, h_tm1, c_tm1, last_mask, h_mask,
-                 *non_sequences):
-        # Construct the Theano symbol expressions for the new state and the
-        # output predictions, given the embedded previous symbol and the
-        # previous state.
-        h_t, c_t = self.transition(last * last_mask, h_tm1 * h_mask, c_tm1)
-        return (h_t, c_t,
-                T.nnet.softmax(self.emission(T.tanh(self.hidden(h_t)))))
 
 
 class LanguageModel(Model):
@@ -66,50 +33,31 @@ class LanguageModel(Model):
 
         self.config = config
 
-        # Import the parameters of the recurrence into the main model.
-        self.add(Gate('gate', config))
-        # Add a learnable parameter for the initial state.
-        self.param('h_0', (config['state_dims'],),
-                   init_f=Gaussian(fan_in=config['state_dims']))
-        self.param('c_0', (config['state_dims'],),
-                   init_f=Gaussian(fan_in=config['state_dims']))
+        self.param('embeddings',
+                   (config['n_symbols'], config['embedding_dims']),
+                   init_f=Gaussian(fan_in=config['embedding_dims']))
+        self.add(Linear('hidden',
+                        config['state_dims'], config['embedding_dims']))
+        self.add(Linear('emission',
+                        config['embedding_dims'], config['n_symbols'],
+                        w=self._embeddings.T))
+        self.add(LSTMSequence(
+            'decoder', False, config['embedding_dims'], config['state_dims'],
+            layernorm=config['layernorm'], dropout=config['dropout'],
+            trainable_initial=True, offset=-1))
 
-        self.add(Dropout('gate_dropout', config['dropout']))
-
-        # Compile a function for a single recurrence step, this is used during
-        # decoding (but not during training).
-        sym_last = T.matrix('last')
-        sym_h_tm1, sym_c_tm1 = T.matrix('h_tm1'), T.matrix('c_tm1')
-        self.step = function(
-                [sym_last, sym_h_tm1, sym_c_tm1],
-                self.gate(
-                    sym_last, sym_h_tm1, sym_c_tm1,
-                    T.ones_like(sym_last), T.ones_like(sym_h_tm1)))
+        self.step = self.decoder.step_fun()
 
     def __call__(self, outputs, outputs_mask):
-        # Construct the Theano symbolic expression for the state and output
-        # prediction sequences, which basically amounts to calling
-        # theano.scan() using the Gate instance as inner function.
-        batch_size = outputs.shape[1]
-        embedded_outputs = self.gate._embeddings[outputs] \
-                         * outputs_mask.dimshuffle(0,1,'x')
-        h_0 = expand_to_batch(self._h_0, batch_size)
-        c_0 = expand_to_batch(self._c_0, batch_size)
-        dropout_masks = [
-                self.gate_dropout.mask(embedded_outputs.shape[1:]),
-                self.gate_dropout.mask(h_0.shape)]
-        (h_seq, c_seq, symbol_seq), _ = theano.scan(
-                fn=self.gate,
-                sequences=[{'input': embedded_outputs, 'taps': [-1]}],
-                outputs_info=[h_0, c_0, None],
-                non_sequences=dropout_masks + self.gate.parameters_list())
-        return h_seq, symbol_seq
+        h_seq, c_seq = self.decoder(
+                self._embeddings[outputs], outputs_mask)
+        pred_seq = softmax_3d(self.emission(T.tanh(self.hidden(h_seq))))
+        return h_seq, pred_seq
 
     def cross_entropy(self, outputs, outputs_mask):
         # Construct a Theano expression for computing the cross-entropy of an
         # example with respect to the current model predictions.
         _, symbol_seq = self(outputs, outputs_mask)
-        batch_size = outputs.shape[1]
         return batch_sequence_crossentropy(
                 symbol_seq, outputs[1:], outputs_mask[1:])
  

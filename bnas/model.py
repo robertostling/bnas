@@ -19,6 +19,7 @@ from theano import tensor as T
 
 from . import init
 from .fun import train_mode, function
+from .utils import expand_to_batch
 
 
 class Model:
@@ -390,6 +391,60 @@ class LSTM(Model):
         c_t = f*c_tm1 + i*c
         h_t = o*T.tanh(self.ln_h(c_t) if self.layernorm else c_t)
         return h_t, c_t
+
+
+class LSTMSequence(Model):
+    def __init__(self, name, backwards, *args,
+                 dropout=0, trainable_initial=False, offset=0, **kwargs):
+        super().__init__(name)
+        self.backwards = backwards
+        self.trainable_initial = trainable_initial
+        self.offset = offset
+        self._step_fun = None
+
+        self.add(Dropout('dropout', dropout))
+        self.add(LSTM('gate', *args, **kwargs))
+        if self.trainable_initial:
+            self.param('h_0', (self.gate.state_dims,),
+                       init_f=init.Gaussian(fan_in=self.gate.state_dims))
+            self.param('c_0', (self.gate.state_dims,),
+                       init_f=init.Gaussian(fan_in=self.gate.state_dims))
+
+    def step(self, inputs, inputs_mask, h_tm1, c_tm1, h_mask, *non_sequences):
+        h_t, c_t = self.gate(inputs, h_tm1 * h_mask, c_tm1)
+        return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
+                T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1))
+
+    def step_fun(self):
+        if self._step_fun is None:
+            inputs = T.matrix('inputs')
+            h_tm1 = T.matrix('h_tm1')
+            c_tm1 = T.matrix('c_tm1')
+            self._step_fun = function(
+                    [inputs, h_tm1, c_tm1],
+                    self.step(inputs, T.ones(inputs.shape[:-1]), h_tm1, c_tm1,
+                              T.ones_like(h_tm1)))
+        return self._step_fun
+
+    def __call__(self, inputs, inputs_mask, h_0=None, c_0=None):
+        if self.trainable_initial:
+            batch_size = inputs.shape[1]
+            if h_0 is None:
+                h_0 = expand_to_batch(self._h_0, batch_size)
+            if c_0 is None:
+                c_0 = expand_to_batch(self._c_0, batch_size)
+        dropout_masks = [self.dropout.mask(h_0.shape)]
+        (h_seq, c_seq), _ = theano.scan(
+                fn=self.step,
+                go_backwards=self.backwards,
+                sequences=[{'input': inputs, 'taps': [self.offset]},
+                           {'input': inputs_mask, 'taps': [self.offset]}],
+                outputs_info=[h_0, c_0],
+                non_sequences=dropout_masks + self.gate.parameters_list())
+        if self.backwards:
+            return h_seq[::-1], c_seq[::-1]
+        else:
+            return h_seq, c_seq
 
 
 class Dropout(Model):
