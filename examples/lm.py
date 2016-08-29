@@ -1,3 +1,16 @@
+"""Character-based language model using LSTM.
+
+This example demonstrates recurrent networks with BNAS, using an LSTM with
+variational dropout (Gal 2016) and layer normalization (Ba, Kiros and Hinton
+2016).
+
+Usage:
+    python3 lm.py model.bin corpus.txt
+
+If model.bin exists, the corpus filename can be left out to generate some
+test sentences.
+"""
+
 import random
 import pickle
 
@@ -8,11 +21,10 @@ from theano import tensor as T
 from bnas.model import Model, Linear, LSTM, Dropout
 from bnas.optimize import Nesterov, iterate_batches
 from bnas.init import Gaussian, Orthogonal, Constant
-from bnas.regularize import L2
 from bnas.utils import expand_to_batch
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import encode_sequences, mask_sequences
-from bnas.search import beam, greedy
+from bnas.search import beam
 from bnas.fun import function
 
 
@@ -164,7 +176,7 @@ if __name__ == '__main__':
                 'index': index,
                 'embedding_dims': 64,
                 'state_dims': 1024,
-                'layernorm': False,
+                'layernorm': 'all',
                 'dropout': 0.2
                 }
 
