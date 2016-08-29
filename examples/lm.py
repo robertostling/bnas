@@ -48,6 +48,11 @@ class LanguageModel(Model):
 
         self.step = self.decoder.step_fun()
 
+        h_t = T.matrix('h_t')
+        self.predict_fun = function(
+                [h_t],
+                T.nnet.softmax(self.emission(T.tanh(self.hidden(h_t)))))
+
     def __call__(self, outputs, outputs_mask):
         h_seq, c_seq = self.decoder(
                 self._embeddings[outputs], outputs_mask)
@@ -67,29 +72,15 @@ class LanguageModel(Model):
         # training batch plus regularization terms.
         return super().loss() + self.cross_entropy(outputs, outputs_mask)
 
-    def search(self, batch_size, start_symbol, stop_symbol,
-               max_length, min_length):
-        # Perform a beam search.
-
+    def search(self, max_length):
         # Get the parameter values of the embeddings and initial state.
-        embeddings = self.gate._embeddings.get_value(borrow=True)
-        h_0 = np.repeat(self._h_0.get_value()[None,:], batch_size, axis=0)
-        c_0 = np.repeat(self._c_0.get_value()[None,:], batch_size, axis=0)
+        embeddings = self._embeddings.get_value(borrow=True)
 
-        # Define a step function, which takes a list of states and a history
-        # of previous outputs, and returns the next states and output
-        # predictions.
-        def step(i, states, outputs, outputs_mask):
-            # In this case we only condition the step on the last output,
-            # and there is only one state.
-            h_tm1, c_tm1 = states
-            h_t, c_t, outputs = self.step(
-                    embeddings[outputs[-1]], h_tm1, c_tm1)
-            return [h_t, c_t], outputs
-
-        # Call the library beam search function to do the dirty job.
-        return beam(step, [h_0, c_0], batch_size, start_symbol,
-                    stop_symbol, max_length, min_length=min_length)
+        # Perform a beam search.
+        return self.decoder.search(
+                self.predict_fun, embeddings,
+                self.config['index']['<S>'], self.config['index']['</S>'],
+                max_length)
 
 
 if __name__ == '__main__':
@@ -124,13 +115,14 @@ if __name__ == '__main__':
                 'index': index,
                 'embedding_dims': 64,
                 'state_dims': 1024,
-                'layernorm': 'all',
-                'dropout': 0.2
+                'layernorm': 'c',
+                'dropout': 0
                 }
 
         lm = LanguageModel('lm', config)
 
         # Training-specific parameters
+        n_epochs = 1
         batch_size = 64
         test_size = batch_size
         max_length = 192
@@ -162,7 +154,7 @@ if __name__ == '__main__':
         # Get one batch of testing data, encoded as a masked matrix.
         test_outputs, test_outputs_mask = mask_sequences(test_set, max_length)
 
-        for i in range(250):
+        for i in range(n_epochs):
             for batch in iterate_batches(train_set, batch_size, len):
                 outputs, outputs_mask = mask_sequences(batch, max_length)
                 if batch_nr % 10 == 0:
@@ -191,8 +183,7 @@ if __name__ == '__main__':
             lm.save(f)
             print('Saved model to %s' % model_filename)
 
-    pred, pred_mask, scores = lm.search(
-            1, index['<S>'], index['</S>'], 72, 72)
+    pred, pred_mask, scores = lm.search(128)
 
     for sent, score in zip(pred, scores):
         print(score, ''.join(symbols[x] for x in sent.flatten()))

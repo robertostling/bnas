@@ -18,8 +18,10 @@ from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano import tensor as T
 
 from . import init
+from . import search
 from .fun import train_mode, function
 from .utils import expand_to_batch
+
 
 
 class Model:
@@ -340,14 +342,22 @@ class LSTM(Model):
                  w=None, w_init=None, w_regularizer=None,
                  u=None, u_init=None, u_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
+                 attention_dims=None, attended_dims=None,
                  layernorm=False):
         super().__init__(name)
 
         assert layernorm in (False, 'c', 'all')
+        assert (attention_dims is None) == (attended_dims is None)
+
+        if attended_dims is not None:
+            input_dims += attended_dims
 
         self.input_dims = input_dims
         self.state_dims = state_dims
         self.layernorm = layernorm
+        self.attention_dims = attention_dims
+        self.attended_dims = attended_dims
+        self.use_attention = attention_dims is not None
 
         if w_init is None: w_init = init.Concatenated(
             [init.Gaussian(fan_in=input_dims)] * 4, axis=1)
@@ -362,6 +372,16 @@ class LSTM(Model):
         self.param('u', (state_dims, state_dims*4), init_f=u_init, value=u)
         self.param('b', (state_dims*4,), init_f=b_init, value=b)
 
+        if self.use_attention:
+            self.add(Linear('attention_u', attended_dims, attention_dims))
+            self.param('attention_w', (state_dims, attention_dims),
+                       init_f=init.Gaussian(fan_in=state_dims))
+            self.param('attention_v', (attention_dims,),
+                       init_f=init.Gaussian(fan_in=attention_dims))
+            self.regularize(self._attention_w, w_regularizer)
+            if layernorm == 'all':
+                self.add(LayerNormalization('ln_a', (None, state_dims)))
+
         self.regularize(self._w, w_regularizer)
         self.regularize(self._u, u_regularizer)
         self.regularize(self._b, b_regularizer)
@@ -374,7 +394,24 @@ class LSTM(Model):
         if layernorm:
             self.add(LayerNormalization('ln_h', (None, state_dims)))
 
-    def __call__(self, inputs, h_tm1, c_tm1):
+    def __call__(self, inputs, h_tm1, c_tm1,
+                 attended=None, attended_dot_u=None):
+        if self.use_attention:
+            # TODO: add layer normalization
+            # Non-precomputed part of the attention vector for this time step
+            #   _ x batch_size x attention_dims
+            h_dot_w = T.dot(h_tm1, self._attention_w).dimshuffle('x',0,1)
+            # Attention vector, with distributions over the positions in
+            # attended
+            #   sequence_length x batch_size
+            attention = T.nnet.softmax(T.dot(
+                T.tanh(attended_dot_u + h_dot_w),
+                self._attention_v).T).T
+            # Compressed attended vector, weighted by the attention vector
+            #   batch_size x attended_dims
+            compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
+            # Append the compressed vector to the inputs and continue as usual
+            inputs = T.concatenate([inputs, weighted], axis=1)
         x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
         x = x + self._b.dimshuffle('x', 0)
         def x_part(i): return x[:, i*self.state_dims:(i+1)*self.state_dims]
@@ -390,7 +427,10 @@ class LSTM(Model):
             c = T.tanh(        x_part(3))
         c_t = f*c_tm1 + i*c
         h_t = o*T.tanh(self.ln_h(c_t) if self.layernorm else c_t)
-        return h_t, c_t
+        if self.use_attention:
+            return h_t, c_t, attention
+        else:
+            return h_t, c_t
 
 
 class LSTMSequence(Model):
@@ -401,6 +441,7 @@ class LSTMSequence(Model):
         self.trainable_initial = trainable_initial
         self.offset = offset
         self._step_fun = None
+        self._attention_u_fun = None
 
         self.add(Dropout('dropout', dropout))
         self.add(LSTM('gate', *args, **kwargs))
@@ -411,40 +452,98 @@ class LSTMSequence(Model):
                        init_f=init.Gaussian(fan_in=self.gate.state_dims))
 
     def step(self, inputs, inputs_mask, h_tm1, c_tm1, h_mask, *non_sequences):
-        h_t, c_t = self.gate(inputs, h_tm1 * h_mask, c_tm1)
-        return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
-                T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1))
+        if self.gate.use_attention:
+            h_t, c_t, attention = self.gate(
+                    inputs, h_tm1 * h_mask, c_tm1,
+                    attended=non_sequences[0], attended_dot_u=non_sequences[1])
+            return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
+                    T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1),
+                    attention)
+        else:
+            h_t, c_t = self.gate(inputs, h_tm1 * h_mask, c_tm1)
+            return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
+                    T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1))
 
     def step_fun(self):
         if self._step_fun is None:
             inputs = T.matrix('inputs')
             h_tm1 = T.matrix('h_tm1')
             c_tm1 = T.matrix('c_tm1')
-            self._step_fun = function(
-                    [inputs, h_tm1, c_tm1],
-                    self.step(inputs, T.ones(inputs.shape[:-1]), h_tm1, c_tm1,
-                              T.ones_like(h_tm1)))
+            if self.gate.use_attention:
+                attended=T.tensor3('attended')
+                attended_dot_u=T.tensor3('attended_dot_u')
+                self._step_fun = function(
+                        [inputs, h_tm1, c_tm1, attended, attended_dot_u],
+                        self.step(inputs, T.ones(inputs.shape[:-1]),
+                                  h_tm1, c_tm1, T.ones_like(h_tm1),
+                                  attended, attended_dot_u))
+            else:
+                self._step_fun = function(
+                        [inputs, h_tm1, c_tm1],
+                        self.step(inputs, T.ones(inputs.shape[:-1]),
+                                  h_tm1, c_tm1, T.ones_like(h_tm1)))
         return self._step_fun
 
-    def __call__(self, inputs, inputs_mask, h_0=None, c_0=None):
+    def attention_u_fun(self):
+        assert self.gate.use_attention
+        if self._attention_u_fun is None:
+            attended = T.tensor3('attended')
+            self._attention_u_fun = function(
+                    [attended], self.gate.attention_u(attended))
+        return self._attention_u_fun
+
+    def search(self, predict_fun, embeddings,
+               start_symbol, stop_symbol, max_length,
+               h_0=None, c_0=None, attended=None, beam_size=4):
+        if self.gate.use_attention:
+            attended_dot_u = self.attention_u_fun()(attended)
+        if self.trainable_initial:
+            # np.repeat(_h_0.get_value()[None,:],batch_size,axis=0)
+            if h_0 is None:
+                h_0 = self._h_0.get_value()[None,:]
+            if c_0 is None:
+                c_0 = self._c_0.get_value()[None,:]
+
+        def step(i, states, outputs, outputs_mask):
+            if self.gate.use_attention:
+                result = self.step_fun()(
+                        embeddings[outputs[-1]], states[0], states[1],
+                        attended, attended_dot_u)
+            else:
+                result = self.step_fun()(
+                        embeddings[outputs[-1]], states[0], states[1])
+            h_t, c_t = result[:2]
+            return [h_t, c_t], predict_fun(h_t)
+
+        return search.beam(
+                step, [h_0, c_0], h_0.shape[0], start_symbol, stop_symbol,
+                max_length, beam_size=beam_size)
+
+
+    def __call__(self, inputs, inputs_mask, h_0=None, c_0=None, attended=None):
         if self.trainable_initial:
             batch_size = inputs.shape[1]
             if h_0 is None:
                 h_0 = expand_to_batch(self._h_0, batch_size)
             if c_0 is None:
                 c_0 = expand_to_batch(self._c_0, batch_size)
+        attention_info = []
+        if self.gate.use_attention:
+            attention_info = [attended, self.gate.attention_u(attended)]
         dropout_masks = [self.dropout.mask(h_0.shape)]
-        (h_seq, c_seq), _ = theano.scan(
+        seqs, _ = theano.scan(
                 fn=self.step,
                 go_backwards=self.backwards,
                 sequences=[{'input': inputs, 'taps': [self.offset]},
                            {'input': inputs_mask, 'taps': [self.offset]}],
-                outputs_info=[h_0, c_0],
-                non_sequences=dropout_masks + self.gate.parameters_list())
+                outputs_info=[h_0, c_0] + \
+                             [None]*(1 if self.gate.use_attention else 0),
+                non_sequences=dropout_masks + attention_info + \
+                              self.gate.parameters_list())
         if self.backwards:
-            return h_seq[::-1], c_seq[::-1]
+            return tuple(seq[::-1] for seq in seqs)
         else:
-            return h_seq, c_seq
+            return seqs
 
 
 class Dropout(Model):
