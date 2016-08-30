@@ -20,7 +20,7 @@ from theano import tensor as T
 from . import init
 from . import search
 from .fun import train_mode, function
-from .utils import expand_to_batch
+from .utils import expand_to_batch, softmax_masked
 
 
 
@@ -336,17 +336,22 @@ class Conv1D(Model):
 
 
 class LSTM(Model):
-    """Long Short-Term Memory."""
+    """Long Short-Term Memory.
+
+    layernorm : str
+        One of `'ba1'` (eq 20--22 of Ba et al.), `'ba2'` (eq 29--31) or
+        `False` (no layer normalization).
+    """
 
     def __init__(self, name, input_dims, state_dims,
                  w=None, w_init=None, w_regularizer=None,
                  u=None, u_init=None, u_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
                  attention_dims=None, attended_dims=None,
-                 layernorm=False):
+                 layernorm='ba1'):
         super().__init__(name)
 
-        assert layernorm in (False, 'c', 'all')
+        assert layernorm in (False, 'ba1', 'ba2')
         assert (attention_dims is None) == (attended_dims is None)
 
         if attended_dims is not None:
@@ -379,61 +384,52 @@ class LSTM(Model):
             self.param('attention_v', (attention_dims,),
                        init_f=init.Gaussian(fan_in=attention_dims))
             self.regularize(self._attention_w, w_regularizer)
-            if layernorm == 'all':
-                self.add(LayerNormalization('ln_a', (None, state_dims)))
+            if layernorm:
+                self.add(LayerNormalization('ln_a', (None, attention_dims)))
 
         self.regularize(self._w, w_regularizer)
         self.regularize(self._u, u_regularizer)
         self.regularize(self._b, b_regularizer)
 
-        if layernorm == 'all':
-            self.add(LayerNormalization('ln_i', (None, state_dims)))
-            self.add(LayerNormalization('ln_f', (None, state_dims)))
-            self.add(LayerNormalization('ln_o', (None, state_dims)))
-            self.add(LayerNormalization('ln_c', (None, state_dims)))
+        if layernorm == 'ba1':
+            self.add(LayerNormalization('ln_1', (None, state_dims*4)))
+            self.add(LayerNormalization('ln_2', (None, state_dims*4)))
         if layernorm:
             self.add(LayerNormalization('ln_h', (None, state_dims)))
 
     def __call__(self, inputs, h_tm1, c_tm1,
                  attended=None, attended_dot_u=None, attention_mask=None):
         if self.use_attention:
-            # TODO: add layer normalization
             # Non-precomputed part of the attention vector for this time step
             #   _ x batch_size x attention_dims
-            h_dot_w = T.dot(h_tm1, self._attention_w).dimshuffle('x',0,1)
+            h_dot_w = T.dot(h_tm1, self._attention_w)
+            if self.layernorm == 'ba1': h_dot_w = self.ln_a(h_dot_w)
+            h_dot_w = h_dot_w.dimshuffle('x',0,1)
             # Attention vector, with distributions over the positions in
             # attended. Elements that fall outside the sentence in each batch
             # are set to zero.
-            # TODO: better way than subtracting a large number inside softmax
-            # and multiplying by mask outside? Create masking version of
-            # T.nnet.softmax ?
             #   sequence_length x batch_size
-            attention = T.nnet.softmax(
-                        (T.dot(
-                            T.tanh(attended_dot_u + h_dot_w),
-                            self._attention_v) -
-                        (1-attention_mask)*1e20).T
-                    ).T * attention_mask
+            attention = softmax_masked(
+                    T.dot(
+                        T.tanh(attended_dot_u + h_dot_w),
+                        self._attention_v).T,
+                    attention_mask.T).T
             # Compressed attended vector, weighted by the attention vector
             #   batch_size x attended_dims
             compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
             # Append the compressed vector to the inputs and continue as usual
             inputs = T.concatenate([inputs, compressed], axis=1)
-        # TODO: try following Ba et al. with 2x layer normalization here:
-        x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
+        if self.layernorm == 'ba1':
+            x = (self.ln_1(T.dot(inputs, self._w)) +
+                 self.ln_2(T.dot(h_tm1, self._u)))
+        else:
+            x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
         x = x + self._b.dimshuffle('x', 0)
         def x_part(i): return x[:, i*self.state_dims:(i+1)*self.state_dims]
-        if self.layernorm == 'all':
-            # TODO: should also try the variant in Ba et al.
-            i = T.nnet.sigmoid(self.ln_i(x_part(0)))
-            f = T.nnet.sigmoid(self.ln_f(x_part(1)))
-            o = T.nnet.sigmoid(self.ln_o(x_part(2)))
-            c = T.tanh(        self.ln_c(x_part(3)))
-        else:
-            i = T.nnet.sigmoid(x_part(0))
-            f = T.nnet.sigmoid(x_part(1))
-            o = T.nnet.sigmoid(x_part(2))
-            c = T.tanh(        x_part(3))
+        i = T.nnet.sigmoid(x_part(0))
+        f = T.nnet.sigmoid(x_part(1))
+        o = T.nnet.sigmoid(x_part(2))
+        c = T.tanh(        x_part(3))
         c_t = f*c_tm1 + i*c
         h_t = o*T.tanh(self.ln_h(c_t) if self.layernorm else c_t)
         if self.use_attention:

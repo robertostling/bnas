@@ -179,8 +179,8 @@ def main():
             'encoder_state_dims': 1024,
             'decoder_state_dims': 1024,
             'attention_dims': 1024,
-            'encoder_layernorm': 'c',
-            'decoder_layernorm': 'c',
+            'encoder_layernorm': 'ba1',
+            'decoder_layernorm': 'ba1',
             }
         
         model = NMT('nmt', config)

@@ -112,14 +112,14 @@ if __name__ == '__main__':
                 'index': index,
                 'embedding_dims': 64,
                 'state_dims': 1024,
-                'layernorm': 'c',
-                'dropout': 0
+                'layernorm': 'ba1',
+                'dropout': 0.2
                 }
 
         lm = LanguageModel('lm', config)
 
         # Training-specific parameters
-        n_epochs = 1
+        n_epochs = 100
         batch_size = 64
         test_size = batch_size
         max_length = 192

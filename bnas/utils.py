@@ -6,6 +6,20 @@ def expand_to_batch(x, batch_size, dim=-2):
     """Expand one dimension of `x` to `batch_size`."""
     return T.shape_padaxis(x, dim).repeat(batch_size, axis=dim)
 
+def softmax_masked(x, mask):
+    """Softmax over a batch of masked items.
+
+    x : matrix
+        Softmax will be computed over the rows of this matrix.
+    mask : matrix
+        Binary matrix, zero elements will be zeroed out before normalization.
+    """
+    # Adapted from Theano's reference implementation:
+    # http://deeplearning.net/software/theano/library/tensor/nnet/nnet.html#theano.tensor.nnet.nnet.softmax
+    e_x = T.exp(x - x.max(axis=1, keepdims=True)) * mask
+    return e_x / e_x.sum(axis=1, keepdims=True)
+
+
 
 def softmax_3d(x):
     """Generalization of T.nnet.softmax for 3D tensors"""
