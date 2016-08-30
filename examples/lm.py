@@ -19,11 +19,10 @@ from theano import tensor as T
 
 from bnas.model import Model, Linear, LSTMSequence
 from bnas.optimize import Nesterov, iterate_batches
-from bnas.init import Gaussian, Orthogonal, Constant
+from bnas.init import Gaussian
 from bnas.utils import softmax_3d
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import encode_sequences, mask_sequences
-from bnas.search import beam
 from bnas.fun import function
 
 
@@ -45,8 +44,6 @@ class LanguageModel(Model):
             'decoder', False, config['embedding_dims'], config['state_dims'],
             layernorm=config['layernorm'], dropout=config['dropout'],
             trainable_initial=True, offset=-1))
-
-        self.step = self.decoder.step_fun()
 
         h_t = T.matrix('h_t')
         self.predict_fun = function(
