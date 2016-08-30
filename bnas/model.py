@@ -395,27 +395,36 @@ class LSTM(Model):
             self.add(LayerNormalization('ln_h', (None, state_dims)))
 
     def __call__(self, inputs, h_tm1, c_tm1,
-                 attended=None, attended_dot_u=None):
+                 attended=None, attended_dot_u=None, attention_mask=None):
         if self.use_attention:
             # TODO: add layer normalization
             # Non-precomputed part of the attention vector for this time step
             #   _ x batch_size x attention_dims
             h_dot_w = T.dot(h_tm1, self._attention_w).dimshuffle('x',0,1)
             # Attention vector, with distributions over the positions in
-            # attended
+            # attended. Elements that fall outside the sentence in each batch
+            # are set to zero.
+            # TODO: better way than subtracting a large number inside softmax
+            # and multiplying by mask outside? Create masking version of
+            # T.nnet.softmax ?
             #   sequence_length x batch_size
-            attention = T.nnet.softmax(T.dot(
-                T.tanh(attended_dot_u + h_dot_w),
-                self._attention_v).T).T
+            attention = T.nnet.softmax(
+                        (T.dot(
+                            T.tanh(attended_dot_u + h_dot_w),
+                            self._attention_v) -
+                        (1-attention_mask)*1e20).T
+                    ).T * attention_mask
             # Compressed attended vector, weighted by the attention vector
             #   batch_size x attended_dims
             compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
             # Append the compressed vector to the inputs and continue as usual
-            inputs = T.concatenate([inputs, weighted], axis=1)
+            inputs = T.concatenate([inputs, compressed], axis=1)
+        # TODO: try following Ba et al. with 2x layer normalization here:
         x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
         x = x + self._b.dimshuffle('x', 0)
         def x_part(i): return x[:, i*self.state_dims:(i+1)*self.state_dims]
         if self.layernorm == 'all':
+            # TODO: should also try the variant in Ba et al.
             i = T.nnet.sigmoid(self.ln_i(x_part(0)))
             f = T.nnet.sigmoid(self.ln_f(x_part(1)))
             o = T.nnet.sigmoid(self.ln_o(x_part(2)))
@@ -453,9 +462,22 @@ class LSTMSequence(Model):
 
     def step(self, inputs, inputs_mask, h_tm1, c_tm1, h_mask, *non_sequences):
         if self.gate.use_attention:
+            # attended is the
+            #   src_sequence_length x batch_size x attention_dims
+            # matrix which we have attention on.
+            #
+            # attended_dot_u is the h_t-independent part of the final
+            # attention vectors, which is precomputed for efficiency.
+            #
+            # attention_mask is a binary mask over the valid elements of
+            # attended, which in practice is the same as the mask passed to
+            # the encoder that created attended. Size
+            #   src_sequence_length x batch_size
             h_t, c_t, attention = self.gate(
                     inputs, h_tm1 * h_mask, c_tm1,
-                    attended=non_sequences[0], attended_dot_u=non_sequences[1])
+                    attended=non_sequences[0],
+                    attended_dot_u=non_sequences[1],
+                    attention_mask=non_sequences[2])
             return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
                     T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1),
                     attention)
@@ -472,11 +494,13 @@ class LSTMSequence(Model):
             if self.gate.use_attention:
                 attended=T.tensor3('attended')
                 attended_dot_u=T.tensor3('attended_dot_u')
+                attention_mask=T.matrix('attention_mask')
                 self._step_fun = function(
-                        [inputs, h_tm1, c_tm1, attended, attended_dot_u],
+                        [inputs, h_tm1, c_tm1,
+                            attended, attended_dot_u, attention_mask],
                         self.step(inputs, T.ones(inputs.shape[:-1]),
                                   h_tm1, c_tm1, T.ones_like(h_tm1),
-                                  attended, attended_dot_u))
+                                  attended, attended_dot_u, attention_mask))
             else:
                 self._step_fun = function(
                         [inputs, h_tm1, c_tm1],
@@ -494,11 +518,11 @@ class LSTMSequence(Model):
 
     def search(self, predict_fun, embeddings,
                start_symbol, stop_symbol, max_length,
-               h_0=None, c_0=None, attended=None, beam_size=4):
+               h_0=None, c_0=None, attended=None, attention_mask=None,
+               beam_size=4):
         if self.gate.use_attention:
             attended_dot_u = self.attention_u_fun()(attended)
         if self.trainable_initial:
-            # np.repeat(_h_0.get_value()[None,:],batch_size,axis=0)
             if h_0 is None:
                 h_0 = self._h_0.get_value()[None,:]
             if c_0 is None:
@@ -508,7 +532,7 @@ class LSTMSequence(Model):
             if self.gate.use_attention:
                 result = self.step_fun()(
                         embeddings[outputs[-1]], states[0], states[1],
-                        attended, attended_dot_u)
+                        attended, attended_dot_u, attention_mask)
             else:
                 result = self.step_fun()(
                         embeddings[outputs[-1]], states[0], states[1])
@@ -520,7 +544,8 @@ class LSTMSequence(Model):
                 max_length, beam_size=beam_size)
 
 
-    def __call__(self, inputs, inputs_mask, h_0=None, c_0=None, attended=None):
+    def __call__(self, inputs, inputs_mask, h_0=None, c_0=None,
+                 attended=None, attention_mask=None):
         if self.trainable_initial:
             batch_size = inputs.shape[1]
             if h_0 is None:
@@ -529,7 +554,8 @@ class LSTMSequence(Model):
                 c_0 = expand_to_batch(self._c_0, batch_size)
         attention_info = []
         if self.gate.use_attention:
-            attention_info = [attended, self.gate.attention_u(attended)]
+            attention_info = [attended, self.gate.attention_u(attended),
+                              attention_mask]
         dropout_masks = [self.dropout.mask(h_0.shape)]
         seqs, _ = theano.scan(
                 fn=self.step,
