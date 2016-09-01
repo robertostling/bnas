@@ -173,7 +173,7 @@ def main():
             'src_index': src_index,
             'trg_index': trg_index,
             'src_embedding_dims': 512,
-            'trg_embedding_dims': 64,
+            'trg_embedding_dims': 512,
             'encoder_dropout': 0.2,
             'decoder_dropout': 0.2,
             'encoder_state_dims': 1024,
