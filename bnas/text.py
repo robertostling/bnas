@@ -67,7 +67,9 @@ class TextEncoder:
     def pad_sequences(self, sequences,
                       length=None, pad_right=True, dtype=np.int32):
         if not sequences:
-            m = np.zeros((0 if length is None else length, 0), dtype=dtype)
+            # An empty matrix would mess up things, so create a dummy 1x1
+            # matrix with an empty mask in case the sequence list is empty.
+            m = np.zeros((1 if length is None else length, 1), dtype=dtype)
             mask = np.zeros_like(m, dtype=np.bool)
             return m, mask
         unknowns = None if self.sub_encoder is None else []
