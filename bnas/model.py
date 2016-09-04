@@ -10,6 +10,7 @@ as building blocks for more complex networks.
 
 from collections import OrderedDict
 import pickle
+import sys
 
 import numpy as np
 import theano
@@ -77,6 +78,22 @@ class Model:
             for submodel in self.submodels.values():
                 for name, p in submodel.parameters():
                     yield ((submodel.name,) + name, p)
+
+    def summarize(self, grads, f=sys.stdout):
+        def tensor_stats(m):
+            return ', '.join([
+                'norm = %g' % np.sqrt((m**2).sum()),
+                'maxabs = %g' % np.abs(m).max(),
+                'minabs = %g' % np.abs(m).min()])
+        def summarize_parameter(name, p, g):
+            print('%s\n    parameter %s\n    gradient %s' % (
+                name, tensor_stats(p), tensor_stats(g)),
+                file=f)
+        params = list(self.parameters())
+        assert len(grads) == len(params)
+        for (name, p), grad in zip(params, grads):
+            summarize_parameter('.'.join(name), p.get_value(borrow=True), grad)
+        f.flush()
 
     def parameters_list(self, include_submodels=True):
         """Return a list with parameters, without their names."""
@@ -470,7 +487,7 @@ class LSTMSequence(Model):
             # the encoder that created attended. Size
             #   src_sequence_length x batch_size
             h_t, c_t, attention = self.gate(
-                    inputs, h_tm1 * h_mask, c_tm1,
+                    inputs, h_tm1 * h_mask.astype(theano.config.floatX), c_tm1,
                     attended=non_sequences[0],
                     attended_dot_u=non_sequences[1],
                     attention_mask=non_sequences[2])
@@ -478,7 +495,8 @@ class LSTMSequence(Model):
                     T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1),
                     attention)
         else:
-            h_t, c_t = self.gate(inputs, h_tm1 * h_mask, c_tm1)
+            h_t, c_t = self.gate(
+                    inputs, h_tm1 * h_mask.astype(theano.config.floatX), c_tm1)
             return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
                     T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1))
 
@@ -612,8 +630,10 @@ class LayerNormalization(Model):
         broadcast = ['x']*len(self.inputs_shape)
         broadcast[self.axis] = 0
 
-        mean = inputs.mean(axis=self.axis, keepdims=True)
-        std = inputs.std(axis=self.axis, keepdims=True)
+        mean = inputs.mean(axis=self.axis, keepdims=True).astype(
+                theano.config.floatX)
+        std = inputs.std(axis=self.axis, keepdims=True).astype(
+                theano.config.floatX)
         normed = (inputs - mean) / (std + self.epsilon)
         return normed * self._g.dimshuffle(*broadcast)
 
