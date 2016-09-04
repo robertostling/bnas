@@ -73,6 +73,7 @@ class Optimizer:
         self.inputs = inputs
         self.outputs = outputs
         self.grad_max_norm = grad_max_norm
+        self._grad_fun = None
 
         self.raw_grad = OrderedDict((name, T.grad(loss, param))
                                     for name, param in self.params.items())
@@ -89,6 +90,14 @@ class Optimizer:
         #self.get_loss = function(
         #        self.inputs+self.outputs,
         #        self.loss)
+
+    def grad_fun(self):
+        if self._grad_fun is None:
+            self._grad_fun = function(
+                    self.inputs + self.outputs,
+                    list(self.raw_grad.values()),
+                    name='grad_fun')
+        return self._grad_fun
 
     def step(self, *args):
         """Take one optimization step.
