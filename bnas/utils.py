@@ -1,5 +1,6 @@
 """Various utility functions."""
 
+import theano
 import theano.tensor as T
 
 def expand_to_batch(x, batch_size, dim=-2):
@@ -16,7 +17,8 @@ def softmax_masked(x, mask):
     """
     # Adapted from Theano's reference implementation:
     # http://deeplearning.net/software/theano/library/tensor/nnet/nnet.html#theano.tensor.nnet.nnet.softmax
-    e_x = T.exp(x - x.max(axis=1, keepdims=True)) * mask
+    e_x = T.exp(x - x.max(axis=1, keepdims=True)).astype(
+            theano.config.floatX) * mask.astype(theano.config.floatX)
     return e_x / e_x.sum(axis=1, keepdims=True)
 
 
