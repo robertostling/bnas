@@ -8,14 +8,30 @@ from theano import tensor as T
 train_mode = T.bscalar('train_mode')
 
 def function(inputs=[], outputs=[], default_mode=0, **kwargs):
+    use_train_mode = train_mode in theano.gof.graph.ancestors(inputs)
+    extra_args = [train_mode] if use_train_mode else []
+
     f = theano.function(
-            list(inputs)+[train_mode],
+            list(inputs)+extra_args,
             outputs,
-            on_unused_input='warn',
+            on_unused_input='raise',
             **kwargs)
-    if default_mode is None:
-        return f
     def g(*args):
-        return f(*(args + (default_mode,)))
+        if default_mode is None:
+            # args[-1] is the train_mode value
+            if use_train_mode:
+                # f() includes train_mode, pass arguments directly
+                return f(*args)
+            else:
+                # f() does not include train_mode, drop the last argument
+                return f(*(args[:-1]))
+        else:
+            # no train_mode value in args
+            if use_train_mode:
+                # use the default value of train_mode
+                return f(*(args + (default_mode,)))
+            else:
+                # f() does not include train_mode, pass arguments directly
+                return f(*args)
     return g
 
