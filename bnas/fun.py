@@ -8,13 +8,17 @@ from theano import tensor as T
 train_mode = T.bscalar('train_mode')
 
 def function(inputs=[], outputs=[], default_mode=0, **kwargs):
-    use_train_mode = train_mode in theano.gof.graph.ancestors(inputs)
+    inputs = list(inputs)
+    outputs_list = list(outputs) if type(outputs) in (list, tuple) \
+                   else [outputs]
+    use_train_mode = train_mode in theano.gof.graph.ancestors(
+            inputs + outputs_list)
     extra_args = [train_mode] if use_train_mode else []
 
     f = theano.function(
             list(inputs)+extra_args,
             outputs,
-            on_unused_input='raise',
+            on_unused_input='warn',
             **kwargs)
     def g(*args):
         if default_mode is None:
