@@ -17,12 +17,12 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, LSTMSequence
+from bnas.model import Model, Linear, Embeddings, LSTMSequence
 from bnas.optimize import Nesterov, iterate_batches
 from bnas.init import Gaussian
 from bnas.utils import softmax_3d
 from bnas.loss import batch_sequence_crossentropy
-from bnas.text import encode_sequences, mask_sequences
+from bnas.text import TextEncoder
 from bnas.fun import function
 
 
@@ -32,17 +32,22 @@ class LanguageModel(Model):
 
         self.config = config
 
-        self.param('embeddings',
-                   (config['n_symbols'], config['embedding_dims']),
-                   init_f=Gaussian(fan_in=config['embedding_dims']))
-        self.add(Linear('hidden',
-                        config['state_dims'], config['embedding_dims']))
-        self.add(Linear('emission',
-                        config['embedding_dims'], config['n_symbols'],
-                        w=self._embeddings.T))
+        self.add(Embeddings(
+            'embeddings', config['n_symbols'], config['embedding_dims']))
+        self.add(Linear(
+            'hidden',
+            config['state_dims'], config['embedding_dims'],
+            dropout=config['dropout'],
+            layernorm=config['layernorm']))
+        self.add(Linear(
+            'emission',
+            config['embedding_dims'], config['n_symbols'],
+            w=self.embeddings._w.T))
         self.add(LSTMSequence(
-            'decoder', False, config['embedding_dims'], config['state_dims'],
-            layernorm=config['layernorm'], dropout=config['dropout'],
+            'decoder', False,
+            config['embedding_dims'], config['state_dims'],
+            dropout=config['recurrent_dropout'],
+            layernorm=config['recurrent_layernorm'],
             trainable_initial=True, offset=-1))
 
         h_t = T.matrix('h_t')
@@ -52,7 +57,7 @@ class LanguageModel(Model):
 
     def __call__(self, outputs, outputs_mask):
         h_seq, c_seq = self.decoder(
-                self._embeddings[outputs], outputs_mask)
+                self.embeddings(outputs), outputs_mask)
         pred_seq = softmax_3d(self.emission(T.tanh(self.hidden(h_seq))))
         return h_seq, pred_seq
 
@@ -71,7 +76,7 @@ class LanguageModel(Model):
 
     def search(self, max_length):
         # Get the parameter values of the embeddings and initial state.
-        embeddings = self._embeddings.get_value(borrow=True)
+        embeddings = self.embeddings._w.get_value(borrow=True)
 
         # Perform a beam search.
         return self.decoder.search(
@@ -92,29 +97,31 @@ if __name__ == '__main__':
             config = pickle.load(f)
             lm = LanguageModel('lm', config)
             lm.load(f)
-            symbols = config['symbols']
-            index = config['index']
+            encoder = config['encoder']
             print('Load model from %s' % model_filename)
     else:
         corpus_filename = sys.argv[2]
         assert os.path.exists(corpus_filename)
 
-        with open(corpus_filename, 'r', encoding='utf-8') as f:
-            sents = [line.strip() for line in f if len(line) >= 10]
-
-        # Create a vocabulary table+index and encode the input sentences.
-        symbols, index, encoded = encode_sequences(sents)
-
         # Model hyperparameters
         config = {
-                'n_symbols': len(symbols),
-                'symbols': symbols,
-                'index': index,
+                'max_length': 192,
                 'embedding_dims': 64,
                 'state_dims': 1024,
-                'layernorm': 'ba1',
-                'dropout': 0.2
+                'recurrent_layernorm': 'ba1',
+                'recurrent_dropout': 0.2,
+                'layernorm': True,
+                'dropout': 0.5
                 }
+
+        with open(corpus_filename, 'r', encoding='utf-8') as f:
+            sents = [line.strip() for line in f
+                     if len(line) >= 10 and len(line) <= config['max_length']]
+
+        encoder = TextEncoder(sequences=sents, special=('<S>', '</S>'))
+
+        config['n_symbols'] = len(encoder)
+        config['encoder'] = encoder
 
         lm = LanguageModel('lm', config)
 
@@ -122,7 +129,6 @@ if __name__ == '__main__':
         n_epochs = 100
         batch_size = 64
         test_size = batch_size
-        max_length = 192
         batch_nr = 0
 
         # Create the model.
@@ -145,15 +151,15 @@ if __name__ == '__main__':
                 [sym_outputs, sym_outputs_mask],
                 lm.cross_entropy(sym_outputs, sym_outputs_mask))
 
-        test_set = encoded[:test_size]
-        train_set = encoded[test_size:]
+        test_set = sents[:test_size]
+        train_set = sents[test_size:]
 
         # Get one batch of testing data, encoded as a masked matrix.
-        test_outputs, test_outputs_mask = mask_sequences(test_set, max_length)
+        test_outputs, test_outputs_mask = encoder.pad_sequences(test_set)
 
         for i in range(n_epochs):
             for batch in iterate_batches(train_set, batch_size, len):
-                outputs, outputs_mask = mask_sequences(batch, max_length)
+                outputs, outputs_mask = encoder.pad_sequences(batch)
                 if batch_nr % 10 == 0:
                     test_loss = cross_entropy(test_outputs, test_outputs_mask)
                     test_loss_bit = (
