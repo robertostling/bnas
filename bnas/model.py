@@ -255,7 +255,7 @@ class Model:
 class Linear(Model):
     """Fully connected linear layer.
 
-    This layer creates one shared parameter, `name_w` of shape
+    This layer creates one shared parameter, `w` of shape
     `(input_dims, output_dims)` if `use_bias` is ``False``, otherwise it
     also creates `name_b` of shape `output_dims` for biases.
 
@@ -284,16 +284,22 @@ class Linear(Model):
     use_bias : bool
         If ``False``, no bias is used and the `b` and `b_init` parameters
         are ignored.
+    dropout : float
+        Dropout factor (the default value of 0 means dropout is not used).
+    layernorm : bool
+        If ``True``, layer normalization is used on the activations.
     """
     def __init__(self, name, input_dims, output_dims,
                  w=None, w_init=None, w_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
-                 use_bias=True):
+                 use_bias=True, dropout=0, layernorm=False):
         super().__init__(name)
 
         self.input_dims = input_dims
         self.output_dims = output_dims
         self.use_bias = use_bias
+        self.dropout = dropout
+        self.layernorm = layernorm
 
         if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
         if b_init is None: b_init = init.Constant(0.0)
@@ -303,12 +309,64 @@ class Linear(Model):
         if use_bias:
             self.param('b', (output_dims,), init_f=b_init, value=b)
             self.regularize(self._b, b_regularizer)
+        if dropout:
+            self.add(Dropout('dropout', dropout))
+        if layernorm:
+            self.add(LayerNormalization('ln', (None, output_dims)))
 
     def __call__(self, inputs):
-        if self.use_bias:
-            return T.dot(inputs, self._w) + self._b
-        else:
-            return T.dot(inputs, self._w)
+        outputs = T.dot(inputs, self._w)
+        if self.layernorm: outputs = self.ln(outputs)
+        if self.use_bias: outputs = outputs + self._b
+        if self.dropout: outputs = self.dropout(outputs)
+        return outputs
+
+
+class Embeddings(Model):
+    """Embeddings layer.
+
+    This layer creates one shared parameter, `w` of shape
+    `(alphabet_size, embedding_dims)`.
+
+    Parameters
+    ----------
+    name : str
+        Name of layer.
+    embedding_dims : int
+        Dimensionality of embeddings.
+    alphabet_size : int
+        Size of symbol alphabet.
+    w : :class:`theano.compile.sharedvalue.SharedVariable`
+        Weight vector to use, or pass ``None`` (default) to create a new
+        one.
+    w_init : :class:`.init.InitializationFunction`
+        Initialization for weight vector, in case `w` is ``None``.
+    w_regularizer : :class:`.regularize.Regularizer`, optional
+        Regularization for weight matrix.
+    dropout : float
+        Dropout factor (the default value of 0 means dropout is not used).
+    """
+    def __init__(self, name, embedding_dims, alphabet_size,
+                 w=None, w_init=None, w_regularizer=None,
+                 dropout=0):
+        super().__init__(name)
+
+        self.embedding_dims = embedding_dims
+        self.alphabet_size = alphabet_size
+        self.dropout = dropout
+
+        if w_init is None: w_init = init.Gaussian(fan_in=embedding_dims)
+
+        self.param('w',
+                (alphabet_size, embedding_dims), init_f=w_init, value=w)
+        self.regularize(self._w, w_regularizer)
+        if dropout:
+            self.add(Dropout('dropout', dropout, sequence=True))
+
+    def __call__(self, inputs):
+        outputs = self._w[inputs]
+        if self.dropout: outputs = self.dropout(outputs)
+        return outputs
 
 
 class Conv1D(Model):
@@ -587,12 +645,23 @@ class LSTMSequence(Model):
 
 
 class Dropout(Model):
-    """Dropout layer."""
+    """Dropout layer.
+    
+    name : str
+        Name of layer.
+    dropout : float
+        Dropout factor (equivalent to 1 - retention probability)
+    sequence : bool
+        If True, dropout is not performed on the last dimension. This is
+        useful for e.g. embedded symbol sequences, where either a symbol is
+        kept intact or it is completely zeroed out.
+    """
 
-    def __init__(self, name, dropout):
+    def __init__(self, name, dropout, sequence=False):
         super().__init__(name)
         self.p = 1.0 - dropout
         self.rng = RandomStreams()
+        self.sequence = sequence
 
     def mask(self, shape):
         """Return a scaled mask for a (symbolic) shape.
@@ -601,18 +670,19 @@ class Dropout(Model):
         is passed through the non_sequences argument to theano.scan().
         """
         if self.p == 1: return T.ones(shape)
-        m = self.rng.binomial(shape, p=self.p).astype(theano.config.floatX)
+        if self.sequence:
+            m = T.shape_padright(self.rng.binomial(shape[:-1], p=self.p)
+                    ).astype(theano.config.floatX)
+        else:
+            m = self.rng.binomial(shape, p=self.p).astype(theano.config.floatX)
         return m / self.p
 
     def __call__(self, inputs):
         if self.p == 1: return inputs
-        return ifelse(
-                train_mode,
-                inputs * (self.rng.binomial(inputs.shape, p=self.p).astype(
-                    theano.config.floatX) / self.p),
-                inputs)
+        m = self.mask(inputs.shape)
+        return ifelse(train_mode, inputs * m, inputs)
 
-
+        
 class LayerNormalization(Model):
     """Layer Normalization (Ba, Kiros and Hinton 2016)."""
 
