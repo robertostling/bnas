@@ -332,10 +332,10 @@ class Embeddings(Model):
     ----------
     name : str
         Name of layer.
-    embedding_dims : int
-        Dimensionality of embeddings.
     alphabet_size : int
         Size of symbol alphabet.
+    embedding_dims : int
+        Dimensionality of embeddings.
     w : :class:`theano.compile.sharedvalue.SharedVariable`
         Weight vector to use, or pass ``None`` (default) to create a new
         one.
@@ -346,7 +346,7 @@ class Embeddings(Model):
     dropout : float
         Dropout factor (the default value of 0 means dropout is not used).
     """
-    def __init__(self, name, embedding_dims, alphabet_size,
+    def __init__(self, name, alphabet_size, embedding_dims,
                  w=None, w_init=None, w_regularizer=None,
                  dropout=0):
         super().__init__(name)
