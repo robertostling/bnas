@@ -11,14 +11,16 @@ If model.bin exists, the corpus filename can be left out to generate some
 test sentences.
 """
 
+from pprint import pprint
 import pickle
+import sys
 
 import numpy as np
 import theano
 from theano import tensor as T
 
 from bnas.model import Model, Linear, Embeddings, LSTMSequence
-from bnas.optimize import Nesterov, iterate_batches
+from bnas.optimize import Adam, iterate_batches
 from bnas.init import Gaussian
 from bnas.utils import softmax_3d
 from bnas.loss import batch_sequence_crossentropy
@@ -31,6 +33,9 @@ class LanguageModel(Model):
         super().__init__(name)
 
         self.config = config
+
+        pprint(config)
+        sys.stdout.flush()
 
         self.add(Embeddings(
             'embeddings', config['n_symbols'], config['embedding_dims']))
@@ -86,7 +91,6 @@ class LanguageModel(Model):
 
 
 if __name__ == '__main__':
-    import sys
     import os
     from time import time
 
@@ -105,18 +109,19 @@ if __name__ == '__main__':
 
         # Model hyperparameters
         config = {
-                'max_length': 192,
-                'embedding_dims': 64,
-                'state_dims': 1024,
-                'recurrent_layernorm': 'ba1',
-                'recurrent_dropout': 0.2,
-                'layernorm': True,
-                'dropout': 0.5
+                'max_length': 128,
+                'embedding_dims': 32,
+                'state_dims': 512,
+                'recurrent_layernorm': False, # 'ba1'
+                'recurrent_dropout': 0,
+                'layernorm': False,
+                'dropout': 0
                 }
 
         with open(corpus_filename, 'r', encoding='utf-8') as f:
-            sents = [line.strip() for line in f
-                     if len(line) >= 10 and len(line) <= config['max_length']]
+            sents = [line.strip() for line in f if len(line) >= 10]
+
+        print('Read %d sentences' % len(sents), flush=True)
 
         encoder = TextEncoder(sequences=sents, special=('<S>', '</S>'))
 
@@ -127,9 +132,8 @@ if __name__ == '__main__':
 
         # Training-specific parameters
         n_epochs = 100
-        batch_size = 64
+        batch_size = 128
         test_size = batch_size
-        batch_nr = 0
 
         # Create the model.
         sym_outputs = T.lmatrix('outputs')
@@ -139,11 +143,10 @@ if __name__ == '__main__':
         # parameters to optimize, which loss function to use, which inputs
         # (none) and outputs are used for the model. We also specify the
         # gradient clipping threshold.
-        optimizer = Nesterov(
+        optimizer = Adam(
                 lm.parameters(),
                 lm.loss(sym_outputs, sym_outputs_mask),
                 [], [sym_outputs, sym_outputs_mask],
-                learning_rate=0.02,
                 grad_max_norm=5.0)
 
         # Compile a function to compute cross-entropy of a batch.
@@ -155,11 +158,15 @@ if __name__ == '__main__':
         train_set = sents[test_size:]
 
         # Get one batch of testing data, encoded as a masked matrix.
-        test_outputs, test_outputs_mask = encoder.pad_sequences(test_set)
+        test_outputs, test_outputs_mask = encoder.pad_sequences(
+                test_set, max_length=config['max_length'])
 
+        batch_nr = 0
+        sent_nr = 0
         for i in range(n_epochs):
             for batch in iterate_batches(train_set, batch_size, len):
-                outputs, outputs_mask = encoder.pad_sequences(batch)
+                outputs, outputs_mask = encoder.pad_sequences(
+                        batch, max_length=config['max_length'])
                 if batch_nr % 10 == 0:
                     test_loss = cross_entropy(test_outputs, test_outputs_mask)
                     test_loss_bit = (
@@ -173,13 +180,14 @@ if __name__ == '__main__':
                 if np.isnan(loss):
                     print('NaN at iteration %d!' % (i+1))
                     break
-                print(('Batch %d:%d: train: %.3f bits/char (%.2f s)') % (
-                    i+1, batch_nr+1,
+                print(('Batch %d:%d:%d: train: %.3f bits/char (%.2f s)') % (
+                    i+1, batch_nr+1, sent_nr+1,
                     (batch_size/outputs_mask[1:].sum())*loss/np.log(2),
                     t),
                     flush=True)
 
                 batch_nr += 1
+                sent_nr += len(batch)
 
         with open(model_filename, 'wb') as f:
             pickle.dump(config, f)
