@@ -37,13 +37,22 @@ class TextEncoder:
 
         self.index = {s:i for i,s in enumerate(self.vocab)}
 
+    def __str__(self):
+        if self.sub_encoder is None:
+            return 'TextEncoder(%d)' % len(self)
+        else:
+            return 'TextEncoder(%d, %s)' % (len(self), str(self.sub_encoder))
+
+    def __repr__(self):
+        return str(self)
+
     def __getitem__(self, x):
         return self.index.get(x, self.index.get('<UNK>'))
 
     def __len__(self):
         return len(self.vocab)
 
-    def encode_sequence(self, sequence, length=None, unknowns=None):
+    def encode_sequence(self, sequence, max_length=None, unknowns=None):
         start = (self.index['<S>'],) if '<S>' in self.index else ()
         stop = (self.index['</S>'],) if '</S>' in self.index else ()
         unk = self.index.get('<UNK>')
@@ -59,26 +68,27 @@ class TextEncoder:
                 return idx
         encoded = tuple(idx for idx in list(map(encode_item, sequence))
                         if idx is not None)
-        if length is None or len(encoded)+len(start)+len(stop) <= length:
+        if max_length is None \
+        or len(encoded)+len(start)+len(stop) <= max_length:
             return start + encoded + stop
         else:
-            return start + encoded[:length-(len(start)+len(stop))] + stop
+            return start + encoded[:max_length-(len(start)+len(stop))] + stop
 
     def pad_sequences(self, sequences,
-                      length=None, pad_right=True, dtype=np.int32):
+                      max_length=None, pad_right=True, dtype=np.int32):
         if not sequences:
             # An empty matrix would mess up things, so create a dummy 1x1
             # matrix with an empty mask in case the sequence list is empty.
-            m = np.zeros((1 if length is None else length, 1), dtype=dtype)
+            m = np.zeros((1 if max_length is None else max_length, 1),
+                         dtype=dtype)
             mask = np.zeros_like(m, dtype=np.bool)
             return m, mask
         unknowns = None if self.sub_encoder is None else []
-        encoded_sequences = [self.encode_sequence(sequence, length, unknowns)
-                             for sequence in sequences]
-        if length is None:
-            length = max(map(len, encoded_sequences))
-        else:
-            assert max(map(len, encoded_sequences)) == length
+        encoded_sequences = [
+                self.encode_sequence(sequence, max_length, unknowns)
+                for sequence in sequences]
+        length = max(map(len, encoded_sequences))
+        length = length if max_length is None else min(length, max_length)
 
         m = np.zeros((length, len(sequences)), dtype=dtype)
         mask = np.zeros_like(m, dtype=np.bool)
