@@ -459,7 +459,7 @@ class LSTM(Model):
             self.param('attention_v', (attention_dims,),
                        init_f=init.Gaussian(fan_in=attention_dims))
             self.regularize(self._attention_w, w_regularizer)
-            if layernorm:
+            if layernorm == 'ba1':
                 self.add(LayerNormalization('ln_a', (None, attention_dims)))
 
         self.regularize(self._w, w_regularizer)
