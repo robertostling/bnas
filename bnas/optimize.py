@@ -6,6 +6,7 @@ stochastic mini-batch gradient descent.
 
 import random
 from collections import OrderedDict
+import pickle
 
 import numpy as np
 import theano
@@ -74,6 +75,8 @@ class Optimizer:
         self.outputs = outputs
         self.grad_max_norm = grad_max_norm
         self._grad_fun = None
+        self.optimizer_params = []
+        self.n_updates = 0
 
         self.raw_grad = OrderedDict((name, T.grad(loss, param))
                                     for name, param in self.params.items())
@@ -87,9 +90,33 @@ class Optimizer:
             self.grad = OrderedDict((name, a*g)
                                     for name, g in self.raw_grad.items())
 
-        #self.get_loss = function(
-        #        self.inputs+self.outputs,
-        #        self.loss)
+    def shared(self, *args, **kwargs):
+        s = theano.shared(*args, **kwargs)
+        self.optimizer_params.append(s)
+        return s
+
+    def get_extra_params(self):
+        return {'n_updates': self.n_updates}
+
+    def set_extra_params(self, x):
+        assert set(x.keys()) == {'n_updates'}
+        for name, v in x.items():
+            setattr(self, name, v)
+
+    def save(self, f):
+        pickle.dump(self.get_extra_params(), f, -1)
+        pickle.dump([s.get_value(borrow=True) for s in self.optimizer_params],
+                    f, -1)
+
+    def load(self, f):
+        self.set_extra_params(pickle.load(f))
+        values = pickle.load(f)
+        if len(values) != len(self.optimizer_params):
+            raise ValueError(
+                    'Expected %d optimizer parameters, %d in file' % (
+                        len(self.optimizer_params), len(values)))
+        for s, v in zip(self.optimizer_params, values):
+            s.set_value(v)
 
     def grad_fun(self):
         if self._grad_fun is None:
@@ -137,7 +164,8 @@ class Optimizer:
         """
         shadows = OrderedDict()
         for param_name, param in self.params.items():
-            s = theano.shared(np.zeros_like(param.get_value()))
+            s = self.shared(np.zeros_like(param.get_value()),
+                            name=name+'_'+param_name)
             shadows[name+'_'+param_name] = s
         return shadows
 
@@ -172,6 +200,7 @@ class SGD(Optimizer):
                 updates=updates)
 
     def step(self, *args):
+        self.n_updates += 1
         return self.step1(*(args + (self.learning_rate,)))
 
 
@@ -227,6 +256,7 @@ class Nesterov(Optimizer):
                 updates=updates2)
 
     def step(self, *args):
+        self.n_updates += 1
         self.step1(self.momentum)
         return self.step2(*(args + (self.learning_rate, self.momentum)))
 
@@ -276,6 +306,7 @@ class RMSProp(Optimizer):
                 updates=updates)
 
     def step(self, *args):
+        self.n_updates += 1
         return self.step1(*(args + (self.learning_rate, self.decay)))
 
 
@@ -310,10 +341,10 @@ class Adam(Optimizer):
 
         vs = self.create_shadows('v')
         ms = self.create_shadows('m')
-        beta_1_t = theano.shared(
+        beta_1_t = self.shared(
                 np.asarray(beta_1, dtype=theano.config.floatX),
                 name='beta_1_t')
-        beta_2_t = theano.shared(
+        beta_2_t = self.shared(
                 np.asarray(beta_2, dtype=theano.config.floatX),
                 name='beta_2_t')
 
@@ -336,5 +367,6 @@ class Adam(Optimizer):
                 updates=updates)
 
     def step(self, *args):
+        self.n_updates += 1
         return self.step1(*(args + (self.learning_rate,)))
 
