@@ -112,8 +112,8 @@ def beam(step, states0, batch_size, start_symbol, stop_symbol, max_length,
         # list of (n_beams, batch_size, dims)
         all_states = [np.array(x) for x in zip(*all_states)]
         # (n_beams, batch_size, n_symbols)
-        all_dists = (np.log(np.array(all_dists))*mask[:,-1,:][...,None]) \
-                  + scores[:,:,None]
+        penalty = (1e10*(1-mask[:,-1,:]))[...,None]
+        all_dists = (np.log(np.array(all_dists))-penalty) + scores[:,:,None]
 
         n_symbols = all_dists.shape[-1]
 
