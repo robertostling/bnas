@@ -82,17 +82,19 @@ class Model:
     def summarize(self, grads, f=sys.stdout):
         def tensor_stats(m):
             return ', '.join([
-                'norm = %g' % np.sqrt((m**2).sum()),
+                'norm = %g' % np.sqrt((m*m).sum()),
                 'maxabs = %g' % np.abs(m).max(),
                 'minabs = %g' % np.abs(m).min()])
         def summarize_parameter(name, p, g):
+            p_stats = tensor_stats(p)
+            g_stats = tensor_stats(g)
             print('%s\n    parameter %s\n    gradient %s' % (
-                name, tensor_stats(p), tensor_stats(g)),
+                name, p_stats, g_stats),
                 file=f)
         params = list(self.parameters())
         assert len(grads) == len(params)
         for (name, p), grad in zip(params, grads):
-            summarize_parameter('.'.join(name), p.get_value(borrow=True), grad)
+            summarize_parameter('.'.join(name), p.get_value(), grad)
         f.flush()
 
     def parameters_list(self, include_submodels=True):
@@ -484,6 +486,7 @@ class LSTM(Model):
             # attended. Elements that fall outside the sentence in each batch
             # are set to zero.
             #   sequence_length x batch_size
+            # Note that attention.T is returned
             attention = softmax_masked(
                     T.dot(
                         T.tanh(attended_dot_u + h_dot_w),
@@ -508,7 +511,7 @@ class LSTM(Model):
         c_t = f*c_tm1 + i*c
         h_t = o*T.tanh(self.ln_h(c_t) if self.layernorm else c_t)
         if self.use_attention:
-            return h_t, c_t, attention
+            return h_t, c_t, attention.T
         else:
             return h_t, c_t
 
