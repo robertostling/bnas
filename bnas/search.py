@@ -106,14 +106,18 @@ def beam(step, states0, batch_size, start_symbol, stop_symbol, max_length,
                 i, [s[j,...] for s in states], sequence[j,...], mask[j,...])
             if i <= min_length:
                 part_dists[:, stop_symbol] = 1e-30
+            # Hard constraint: </S> must always be followed by </S>
+            finished = (sequence[j, -1, :] == stop_symbol)[...,None]
+            finished_dists = np.full_like(part_dists, 1e-30)
+            finished_dists[:, stop_symbol] = 1.0
+            part_dists = part_dists*(1-finished) + finished_dists*finished
             all_states.append(part_states)
             all_dists.append(part_dists)
 
         # list of (n_beams, batch_size, dims)
         all_states = [np.array(x) for x in zip(*all_states)]
         # (n_beams, batch_size, n_symbols)
-        penalty = (1e10*(1-mask[:,-1,:]))[...,None]
-        all_dists = (np.log(np.array(all_dists))-penalty) + scores[:,:,None]
+        all_dists = np.log(np.array(all_dists)) + scores[:,:,None]
 
         n_symbols = all_dists.shape[-1]
 
@@ -133,7 +137,7 @@ def beam(step, states0, batch_size, start_symbol, stop_symbol, max_length,
                     sequence[best_beam,:,np.arange(batch_size)[None,:]],
                     1, 2),
                 best_symbol[:,None,:]], axis=1)
-        last_active = (sequence[:,-2,:] != stop_symbol) * mask[:,-1,:]
+        last_active = (sequence[:,-2,:] != stop_symbol)
         mask = np.concatenate([
                 np.swapaxes(
                     mask[best_beam,:,np.arange(batch_size)[None,:]],
