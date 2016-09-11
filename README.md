@@ -8,6 +8,11 @@ Unlike libraries such as [Keras](http://keras.io/) and
 people (myself in particular) use Theano efficiently when developing new
 architectures.
 
+BNAS is used by and developed in tandem with
+[HNMT](https://github.com/robertostling/hnmt), the Helsinki Neural Machine
+Translation (NMT) system. A simpler NMT system for educational purposes can
+be found in the `examples/` directory.
+
 ## Installing
 
 Since this is a project currently under development, you probably want to
