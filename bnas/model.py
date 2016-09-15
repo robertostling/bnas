@@ -21,7 +21,7 @@ from theano import tensor as T
 from . import init
 from . import search
 from .fun import train_mode, function
-from .utils import expand_to_batch, softmax_masked
+from .utils import expand_to_batch, softmax_masked, softmax_3d
 
 
 
@@ -415,6 +415,18 @@ class Conv1D(Model):
 class LSTM(Model):
     """Long Short-Term Memory.
 
+    name : str
+        Name of layer.
+    input_dims : int
+        Length of each vector in the input sequence.
+    state_dims : int
+        Size of internal states. An LSTM contains two states, each of the will
+        be of size state_dims.
+    attention_dims : int
+        If specified, use attention and let this be the size of the hidden
+        attention state.
+    attented_dims : int
+        Dimensionality of the sequence to have attention on.
     layernorm : str
         One of `'ba1'` (eq 20--22 of Ba et al.), `'ba2'` (eq 29--31) or
         `False` (no layer normalization).
@@ -425,11 +437,13 @@ class LSTM(Model):
                  u=None, u_init=None, u_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
                  attention_dims=None, attended_dims=None,
-                 layernorm='ba1'):
+                 layernorm=False):
         super().__init__(name)
 
         assert layernorm in (False, 'ba1', 'ba2')
         assert (attention_dims is None) == (attended_dims is None)
+
+        self.n_states = 2
 
         if attended_dims is not None:
             input_dims += attended_dims
@@ -647,6 +661,160 @@ class LSTMSequence(Model):
             return seqs
 
 
+class Sequence(Model):
+    def __init__(self, name, gate_type, backwards, *args,
+                 dropout=0, trainable_initial=False, offset=0, **kwargs):
+        super().__init__(name)
+        self.backwards = backwards
+        self.trainable_initial = trainable_initial
+        self.offset = offset
+        self._step_fun = None
+        self._attention_u_fun = None
+
+        self.add(Dropout('dropout', dropout))
+        self.add(gate_type('gate', *args, **kwargs))
+        if self.trainable_initial:
+            for state in range(self.gate.n_states):
+                self.param('state_%d_0' % state, (self.gate.state_dims,),
+                           init_f=init.Gaussian(fan_in=self.gate.state_dims))
+
+    def step(self, inputs, inputs_mask, *args):
+        states_tm1 = args[:self.gate.n_states]
+        h_mask = args[self.gate.n_states]
+        non_sequences = args[self.gate.n_states+1:]
+        # TODO: currently assume that dropout is applied only to states[0]
+        #       through h_mask (which is passed through non_sequences and
+        #       constant at each time step)
+
+        if self.gate.use_attention:
+            # attended is the
+            #   src_sequence_length x batch_size x attention_dims
+            # matrix which we have attention on.
+            #
+            # attended_dot_u is the h_t-independent part of the final
+            # attention vectors, which is precomputed for efficiency.
+            #
+            # attention_mask is a binary mask over the valid elements of
+            # attended, which in practice is the same as the mask passed to
+            # the encoder that created attended. Size
+            #   src_sequence_length x batch_size
+            states_attention = self.gate(
+                    inputs,
+                    *((states_tm1[0] * h_mask.astype(theano.config.floatX),) +
+                      states_tm1[1:]),
+                    attended=non_sequences[0],
+                    attended_dot_u=non_sequences[1],
+                    attention_mask=non_sequences[2])
+            states_t = states_attention[:-1]
+            attention = states_attention[-1]
+            return tuple(T.switch(inputs_mask.dimshuffle(0, 'x'), s_t, s_tm1)
+                         for s_t, s_tm1 in zip(states_t, states_tm1)
+                         ) + (attention,)
+        else:
+            states_t = self.gate(
+                    inputs,
+                    *((states_tm1[0] * h_mask.astype(theano.config.floatX),) +
+                      states_tm1[1:]))
+            return tuple(T.switch(inputs_mask.dimshuffle(0, 'x'), s_t, s_tm1)
+                         for s_t, s_tm1 in zip(states_t, states_tm1))
+
+    def step_fun(self):
+        if self._step_fun is None:
+            inputs = T.matrix('inputs')
+            states_tm1 = [T.matrix('state_%d_tm1' % state)
+                          for state in range(self.gate.n_states)]
+            if self.gate.use_attention:
+                attended=T.tensor3('attended')
+                attended_dot_u=T.tensor3('attended_dot_u')
+                attention_mask=T.matrix('attention_mask')
+                self._step_fun = function(
+                        [inputs] + states_tm1 + [
+                            attended, attended_dot_u, attention_mask],
+                        self.step(*([inputs, T.ones(inputs.shape[:-1])] +
+                                    states_tm1 + [T.ones_like(states_tm1[0]),
+                                    attended, attended_dot_u,
+                                    attention_mask])))
+            else:
+                self._step_fun = function(
+                        [inputs] + states_tm1,
+                        self.step(*([inputs, T.ones(inputs.shape[:-1])] +
+                                  states_tm1 + [T.ones_like(states_tm1[0])])))
+        return self._step_fun
+
+    def attention_u_fun(self):
+        assert self.gate.use_attention
+        if self._attention_u_fun is None:
+            attended = T.tensor3('attended')
+            self._attention_u_fun = function(
+                    [attended], self.gate.attention_u(attended))
+        return self._attention_u_fun
+
+    def search(self, predict_fun, embeddings,
+               start_symbol, stop_symbol, max_length,
+               states_0=None, attended=None, attention_mask=None,
+               fixed=None,
+               beam_size=4):
+        if self.gate.use_attention:
+            attended_dot_u = self.attention_u_fun()(attended)
+        if self.trainable_initial:
+            if states_0 is None:
+                states_0 = [
+                    getattr(self, '_state_%d_0' % state).get_value()[None,:]
+                    for state in range(self.gate.n_states)]
+
+        def step(i, states, outputs, outputs_mask):
+            inputs = embeddings[outputs[-1]]
+            # TODO: is this the best way to add extra arguments?
+            if fixed is not None:
+                inputs = np.concatenate(
+                    [inputs, fixed[None,:].repeat(0, axis=-1)],
+                    axis=-1)
+            if self.gate.use_attention:
+                result = self.step_fun()(
+                    *([inputs] + states + [
+                    attended, attended_dot_u, attention_mask]))
+            else:
+                result = self.step_fun()(
+                    *([inputs] + states))
+            states = result[:self.gate.n_states]
+            # NOTE: state[0] hard-coded
+            return states, predict_fun(states[0])
+
+        return search.beam(
+                step, states_0, states_0[0].shape[0],
+                start_symbol, stop_symbol,
+                max_length, beam_size=beam_size)
+
+
+    def __call__(self, inputs, inputs_mask, states_0=None,
+                 attended=None, attention_mask=None):
+        if self.trainable_initial:
+            batch_size = inputs.shape[1]
+            if states_0 is None:
+                states_0 = [
+                        expand_to_batch(getattr(self, '_state_%d_0' % state),
+                                        batch_size)
+                        for state in range(self.gate.n_states)]
+        attention_info = []
+        if self.gate.use_attention:
+            attention_info = [attended, self.gate.attention_u(attended),
+                              attention_mask]
+        dropout_masks = [self.dropout.mask(states_0[0].shape)]
+        seqs, _ = theano.scan(
+                fn=self.step,
+                go_backwards=self.backwards,
+                sequences=[{'input': inputs, 'taps': [self.offset]},
+                           {'input': inputs_mask, 'taps': [self.offset]}],
+                outputs_info=list(states_0) + \
+                             [None]*(1 if self.gate.use_attention else 0),
+                non_sequences=dropout_masks + attention_info + \
+                              self.gate.parameters_list())
+        if self.backwards:
+            return tuple(seq[::-1] for seq in seqs)
+        else:
+            return seqs
+
+
 class Dropout(Model):
     """Dropout layer.
     
@@ -709,4 +877,68 @@ class LayerNormalization(Model):
                 theano.config.floatX)
         normed = (inputs - mean) / (std + self.epsilon)
         return normed * self._g.dimshuffle(*broadcast)
+
+
+class LinearSelection(Model):
+    def __init__(self, name, input_dims, output_dims, selector_dims,
+                 parallel_dims,
+                 w=None, w_init=None, w_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None,
+                 sw=None, sw_init=None,
+                 sb=None, sb_init=None,
+                 use_bias=True, dropout=0, layernorm=False):
+        super().__init__(name)
+
+        self.input_dims = input_dims
+        self.output_dims = output_dims
+        self.selector_dims = selector_dims
+        self.parallel_dims = parallel_dims
+        self.use_bias = use_bias
+        self.dropout = dropout
+        self.layernorm = layernorm
+
+        if w_init is None: w_init = init.Concatenated(
+                    [init.Gaussian(fan_in=input_dims)] * parallel_dims)
+        if b_init is None: b_init = init.Constant(0.0)
+        if sw_init is None: sw_init = init.Concatenated(
+                    [init.Gaussian(fan_in=selector_dims)] * parallel_dims)
+        if sb_init is None: sb_init = init.Constant(0.0)
+
+        self.param('w', (input_dims, output_dims*parallel_dims),
+                   init_f=w_init, value=w)
+        self.regularize(self._w, w_regularizer)
+        if use_bias:
+            self.param('b', (output_dims*parallel_dims,),
+                       init_f=b_init, value=b)
+            self.regularize(self._b, b_regularizer)
+
+        self.param('sw', (selector_dims, output_dims*parallel_dims),
+                   init_f=sw_init)
+        self.param('sb', (output_dims*parallel_dims,),
+                   init_f=sb_init)
+
+        if dropout:
+            self.add(Dropout('dropout', dropout))
+        if layernorm:
+            self.add(LayerNormalization('ln', (None, output_dims)))
+
+    def __call__(self, inputs, selector):
+        par = T.dot(inputs, self._w)
+        if self.use_bias: par = par + self._b.dimshuffle('x', 0)
+        # TODO: should activation function be here or below?
+        #par = T.tanh(par)
+        par = par.reshape(
+                (inputs.shape[0], self.output_dims, self.parallel_dims))
+
+        sel = T.dot(selector, self._sw) + self._sb.dimshuffle('x', 0)
+        sel = sel.reshape(
+                (inputs.shape[0], self.output_dims, self.parallel_dims))
+        sel = softmax_3d(sel)
+
+        outputs = (par * sel).sum(axis=-1)
+        # TODO: if moving tanh(), also move LN application from here
+        if self.layernorm: outputs = self.ln(outputs)
+        outputs = T.tanh(outputs)
+        if self.dropout: outputs = self.dropout(outputs)
+        return outputs
 
