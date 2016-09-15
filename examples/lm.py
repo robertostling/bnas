@@ -19,7 +19,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, Embeddings, LSTMSequence
+from bnas.model import Model, Linear, Embeddings, Sequence, LSTM
 from bnas.optimize import Adam, iterate_batches
 from bnas.init import Gaussian
 from bnas.utils import softmax_3d
@@ -48,8 +48,8 @@ class LanguageModel(Model):
             'emission',
             config['embedding_dims'], config['n_symbols'],
             w=self.embeddings._w.T))
-        self.add(LSTMSequence(
-            'decoder', False,
+        self.add(Sequence(
+            'decoder', LSTM, False,
             config['embedding_dims'], config['state_dims'],
             dropout=config['recurrent_dropout'],
             layernorm=config['recurrent_layernorm'],
@@ -86,7 +86,7 @@ class LanguageModel(Model):
         # Perform a beam search.
         return self.decoder.search(
                 self.predict_fun, embeddings,
-                self.config['index']['<S>'], self.config['index']['</S>'],
+                self.config['encoder']['<S>'], self.config['encoder']['</S>'],
                 max_length)
 
 
@@ -109,13 +109,13 @@ if __name__ == '__main__':
 
         # Model hyperparameters
         config = {
-                'max_length': 128,
+                'max_length': 256,
                 'embedding_dims': 32,
                 'state_dims': 512,
-                'recurrent_layernorm': False, # 'ba1'
-                'recurrent_dropout': 0,
-                'layernorm': False,
-                'dropout': 0
+                'recurrent_layernorm': 'ba1',
+                'recurrent_dropout': 0.3,
+                'layernorm': True,
+                'dropout': 0.3
                 }
 
         with open(corpus_filename, 'r', encoding='utf-8') as f:
@@ -131,7 +131,7 @@ if __name__ == '__main__':
         lm = LanguageModel('lm', config)
 
         # Training-specific parameters
-        n_epochs = 100
+        n_epochs = 1
         batch_size = 128
         test_size = batch_size
 
@@ -197,5 +197,6 @@ if __name__ == '__main__':
     pred, pred_mask, scores = lm.search(128)
 
     for sent, score in zip(pred, scores):
-        print(score, ''.join(symbols[x] for x in sent.flatten()))
+        print(score,
+              ''.join(config['encoder'].vocab[x] for x in sent.flatten()))
 
