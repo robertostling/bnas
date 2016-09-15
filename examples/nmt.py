@@ -12,7 +12,7 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, LSTMSequence
+from bnas.model import Model, Linear, LSTM, Sequence
 from bnas.optimize import Adam, iterate_batches
 from bnas.init import Gaussian
 from bnas.utils import softmax_3d
@@ -40,8 +40,8 @@ class NMT(Model):
                         len(config['trg_symbols']),
                         w=self._trg_embeddings.T))
         for prefix, backwards in (('fwd', False), ('back', True)):
-            self.add(LSTMSequence(
-                prefix+'_encoder', backwards,
+            self.add(Sequence(
+                prefix+'_encoder', LSTM, backwards,
                 config['src_embedding_dims'] + (
                     config['encoder_state_dims'] if backwards else 0),
                 config['encoder_state_dims'],
@@ -49,8 +49,8 @@ class NMT(Model):
                 dropout=config['encoder_dropout'],
                 trainable_initial=True,
                 offset=0))
-        self.add(LSTMSequence(
-            'decoder', False,
+        self.add(Sequence(
+            'decoder', LSTM, False,
             config['trg_embedding_dims'],
             config['decoder_state_dims'],
             layernorm=config['decoder_layernorm'],
@@ -90,7 +90,7 @@ class NMT(Model):
                 self.config['trg_index']['<S>'],
                 self.config['trg_index']['</S>'],
                 max_length,
-                h_0=h_0, c_0=c_0,
+                states_0=[h_0, c_0],
                 attended=attended,
                 attention_mask=inputs_mask)
 
@@ -113,7 +113,7 @@ class NMT(Model):
         embedded_outputs = self._trg_embeddings[outputs]
         h_0, c_0, attended = self.encode(inputs, inputs_mask)
         h_seq, c_seq, attention_seq = self.decoder(
-                embedded_outputs, outputs_mask, h_0=h_0, c_0=c_0,
+                embedded_outputs, outputs_mask, states_0=(h_0, c_0),
                 attended=attended, attention_mask=inputs_mask)
         pred_seq = softmax_3d(self.emission(T.tanh(self.hidden(h_seq))))
 
