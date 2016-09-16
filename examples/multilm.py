@@ -9,13 +9,69 @@ import numpy as np
 import theano
 from theano import tensor as T
 
-from bnas.model import Model, Linear, Embeddings, LSTMSequence
+from bnas.model import Model, Linear, Embeddings, Sequence, LinearSelection
 from bnas.optimize import Adam, iterate_batches
-from bnas.init import Gaussian, Orthogonal
-from bnas.utils import softmax_3d
+from bnas.init import Gaussian, Orthogonal, Concatenated, Constant
+from bnas.utils import softmax_3d, expand_to_batch
 from bnas.loss import batch_sequence_crossentropy
 from bnas.text import TextEncoder
 from bnas.fun import function
+
+# TODO: proper evaluation where multilingual model is evaluated on same
+# monolingual test sets as the monolingual models.
+class SelectionLSTM(Model):
+    def __init__(self, name, input_dims, state_dims, parallel_dims, pick_dims,
+                 layernorm=False):
+        super().__init__(name)
+        self.n_states = 2
+        self.use_attention = False
+
+        self.input_dims = input_dims
+        self.state_dims = state_dims
+        self.parallel_dims = parallel_dims
+        self.pick_dims = pick_dims
+
+        w_init = Concatenated(
+                [Gaussian(fan_in=input_dims)] * 3, axis=1)
+        u_init = Concatenated(
+                [Orthogonal()] * 3, axis=1)
+        b_init = Concatenated(
+                [Constant(x) for x in [0.0, 1.0, 0.0]])
+
+        self.add(LinearSelection(
+            'selection',
+            state_dims+input_dims, state_dims, pick_dims, parallel_dims,
+            w_init=Concatenated([
+                Concatenated(
+                    [Orthogonal(), Gaussian(fan_in=input_dims)],
+                    div_fun=lambda n: [state_dims, input_dims])
+                for _ in range(parallel_dims)],
+                axis=1),
+            sw_init=Concatenated([
+                Concatenated(
+                    [Orthogonal(), Gaussian(fan_in=input_dims+pick_dims)],
+                    div_fun=lambda n: [state_dims, input_dims+pick_dims])
+                for _ in range(parallel_dims)],
+                axis=1),
+            input_select=True))
+
+        self.param('w', (input_dims, state_dims*3), init_f=w_init)
+        self.param('u', (state_dims, state_dims*3), init_f=u_init)
+        self.param('b', (state_dims*3,), init_f=b_init)
+
+    def __call__(self, inputs_pick, h_tm1, c_tm1):
+        inputs = inputs_pick[:, :self.input_dims]
+        pick = inputs_pick[:, self.input_dims:]
+        x = T.dot(inputs, self._w) + T.dot(h_tm1, self._u)
+        x = x + self._b.dimshuffle('x', 0)
+        def x_part(i): return x[:, i*self.state_dims:(i+1)*self.state_dims]
+        i = T.nnet.sigmoid(x_part(0))
+        f = T.nnet.sigmoid(x_part(1))
+        o = T.nnet.sigmoid(x_part(2))
+        c = self.selection(T.concatenate([h_tm1, inputs], axis=-1), pick)
+        c_t = f*c_tm1 + i*c
+        h_t = o*T.tanh(c_t)
+        return h_t, c_t
 
 
 class LanguageModel(Model):
@@ -30,28 +86,34 @@ class LanguageModel(Model):
         self.add(Embeddings(
             'lang_embeddings',
             len(config['langs']), config['lang_embedding_dims']))
-        # TODO: could have per-language character embeddings
-        # TODO: consider other architectures, including RHN or deep LSTMs
-        #   -- general problem: how to send "instructions" to a network,
-        #                       like the language switch in this case?
-        # TODO: prepare for run with the full corpus
-        # TODO: generation
+        self.add(Embeddings(
+            'ortho_embeddings',
+            len(config['langs']), config['lang_embedding_dims']))
         self.add(Embeddings(
             'embeddings', len(config['encoder']), config['embedding_dims']))
-        self.add(Linear(
+        self.add(LinearSelection(
             'hidden',
-            config['state_dims'] + config['lang_embedding_dims'],
+            config['state_dims'],
             config['embedding_dims'],
+            config['lang_embedding_dims'],
+            config['parallel_dims'],
             dropout=config['dropout'],
-            layernorm=config['layernorm']))
+            layernorm=config['layernorm'],
+            input_select=True))
+        #self.add(Linear(
+        #    'hidden',
+        #    config['state_dims'] + config['lang_embedding_dims'],
+        #    config['embedding_dims'],
+        #    dropout=config['dropout'],
+        #    layernorm=config['layernorm']))
         self.add(Linear(
             'emission',
             config['embedding_dims'], len(config['encoder']),
             w=self.embeddings._w.T))
-        self.add(LSTMSequence(
-            'decoder', False,
-            config['embedding_dims'] + config['lang_embedding_dims'],
-            config['state_dims'],
+        self.add(Sequence(
+            'decoder', SelectionLSTM, False,
+            config['embedding_dims'], config['state_dims'],
+            config['parallel_dims'], config['lang_embedding_dims'],
             dropout=config['recurrent_dropout'],
             layernorm=config['recurrent_layernorm'],
             trainable_initial=True, offset=-1))
@@ -61,6 +123,11 @@ class LanguageModel(Model):
         #        [h_t],
         #        T.nnet.softmax(self.emission(T.tanh(self.hidden(h_t)))))
 
+    #def step(self, inputs, inputs_mask, h_tm1, c_tm1, lang, *non_sequences):
+    #    h_t, c_t = self.gate(inputs, h_tm1, c_tm1, lang)
+    #    return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
+    #            T.switch(inputs_mask.dimshuffle(0, 'x'), c_t, c_tm1))
+
     def __call__(self, lang, outputs, outputs_mask):
         lang_embedded = T.shape_padleft(self.lang_embeddings(lang)).repeat(
                 outputs.shape[0], axis=0)
@@ -68,8 +135,9 @@ class LanguageModel(Model):
         h_seq, c_seq = self.decoder(
                 T.concatenate([outputs_embedded, lang_embedded], axis=-1),
                 outputs_mask)
-        pred_seq = softmax_3d(self.emission(T.tanh(self.hidden(
-            T.concatenate([h_seq, lang_embedded[1:]], axis=-1)))))
+        pred_seq = softmax_3d(self.emission(
+            T.tanh(self.hidden(
+                h_seq, self.ortho_embeddings(lang), sequence=True))))
         return h_seq, pred_seq
 
     def cross_entropy(self, lang, outputs, outputs_mask):
@@ -164,8 +232,9 @@ if __name__ == '__main__':
                 'encoder': encoder,
                 'max_length': 256,
                 'lang_embedding_dims': 32,
+                'parallel_dims': 8,
                 'embedding_dims': 32,
-                'state_dims': 4096,
+                'state_dims': 512,
                 'recurrent_layernorm': 'ba1',
                 'recurrent_dropout': 0.3,
                 'layernorm': True,
