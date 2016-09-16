@@ -455,8 +455,7 @@ class LSTM(Model):
         self.attended_dims = attended_dims
         self.use_attention = attention_dims is not None
 
-        if w_init is None: w_init = init.Concatenated(
-            [init.Gaussian(fan_in=input_dims)] * 4, axis=1)
+        if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
 
         if u_init is None: u_init = init.Concatenated(
             [init.Orthogonal()]*4, axis=1)
@@ -897,11 +896,9 @@ class LinearSelection(Model):
         self.dropout = dropout
         self.layernorm = layernorm
 
-        if w_init is None: w_init = init.Concatenated(
-                    [init.Gaussian(fan_in=input_dims)] * parallel_dims)
+        if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
         if b_init is None: b_init = init.Constant(0.0)
-        if sw_init is None: sw_init = init.Concatenated(
-                    [init.Gaussian(fan_in=selector_dims)] * parallel_dims)
+        if sw_init is None: sw_init = init.Gaussian(fan_in=selector_dims)
         if sb_init is None: sb_init = init.Constant(0.0)
 
         self.param('w', (input_dims, output_dims*parallel_dims),
@@ -922,23 +919,27 @@ class LinearSelection(Model):
         if layernorm:
             self.add(LayerNormalization('ln', (None, output_dims)))
 
-    def __call__(self, inputs, selector):
+    def __call__(self, inputs, selector, sequence=False):
         par = T.dot(inputs, self._w)
-        if self.use_bias: par = par + self._b.dimshuffle('x', 0)
-        # TODO: should activation function be here or below?
-        #par = T.tanh(par)
-        par = par.reshape(
-                (inputs.shape[0], self.output_dims, self.parallel_dims))
+        if self.use_bias: par = par + self._b
+        if sequence:
+            par = par.reshape((par.shape[0], par.shape[1],
+                               self.output_dims, self.parallel_dims))
+        else:
+            par = par.reshape((par.shape[0],
+                               self.output_dims, self.parallel_dims))
 
+        # Note that par might be a 3D or 4D tensor, while sel is always 3D
         sel = T.dot(selector, self._sw) + self._sb.dimshuffle('x', 0)
         sel = sel.reshape(
-                (inputs.shape[0], self.output_dims, self.parallel_dims))
+                (sel.shape[0], self.output_dims, self.parallel_dims))
         sel = softmax_3d(sel)
 
-        outputs = (par * sel).sum(axis=-1)
-        # TODO: if moving tanh(), also move LN application from here
+        if sequence:
+            outputs = (par * sel.dimshuffle('x',0,1,2)).sum(axis=-1)
+        else:
+            outputs = (par * sel).sum(axis=-1)
         if self.layernorm: outputs = self.ln(outputs)
-        outputs = T.tanh(outputs)
         if self.dropout: outputs = self.dropout(outputs)
         return outputs
 
