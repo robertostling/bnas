@@ -10,6 +10,8 @@ Examples
 >>> Linear('transition', 100, 100, w_init=Orthogonal())
 """
 
+import sys
+
 import numpy as np
 import theano
 
@@ -64,8 +66,10 @@ class Concatenated(InitializationFunction):
         self.axis = axis
 
     def __call__(self, dims, dtype=theano.config.floatX):
+        divs = self.div_fun(dims[self.axis])
+        assert sum(divs) == dims[self.axis]
         shapes = [dims[:self.axis] + (dim0,) + dims[self.axis+1:]
-                  for dim0 in self.div_fun(dims[self.axis])]
+                  for dim0 in divs]
         return np.concatenate(
                 [f(shape, dtype) for f, shape in zip(self.init_funs, shapes)],
                 axis=self.axis)
@@ -172,6 +176,8 @@ class Orthogonal(InitializationFunction):
             Q, R = np.linalg.qr(M)
             Q = Q * np.sign(np.diag(R))
             return (Q * self.scale).astype(dtype)
+        print('WARNING: creating non-square orthogonal matrix (bug?)',
+              file=sys.stderr)
         M1 = np.random.standard_normal((dims[0], dims[0]))
         M2 = np.random.standard_normal((dims[1], dims[1]))
         Q1, R1 = np.linalg.qr(M1)
