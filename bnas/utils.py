@@ -21,13 +21,17 @@ def softmax_masked(x, mask):
             theano.config.floatX) * mask.astype(theano.config.floatX)
     return e_x / e_x.sum(axis=1, keepdims=True)
 
-
-
 def softmax_3d(x):
     """Generalization of T.nnet.softmax for 3D tensors"""
     return T.nnet.softmax(x.reshape(
         (x.shape[0]*x.shape[1], x.shape[2]))).reshape(
         (x.shape[0], x.shape[1], x.shape[2]))
+
+def softmax_4d(x):
+    """Generalization of T.nnet.softmax for 4D tensors"""
+    return T.nnet.softmax(x.reshape(
+        (x.shape[0]*x.shape[1]*x.shape[2], x.shape[3]))).reshape(
+        (x.shape[0], x.shape[1], x.shape[2], x.shape[3]))
 
 def concatenate(tensor_list, axis=0):
     """

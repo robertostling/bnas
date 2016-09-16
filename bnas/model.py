@@ -21,7 +21,7 @@ from theano import tensor as T
 from . import init
 from . import search
 from .fun import train_mode, function
-from .utils import expand_to_batch, softmax_masked, softmax_3d
+from .utils import expand_to_batch, softmax_masked, softmax_3d, softmax_4d
 
 
 
@@ -885,6 +885,7 @@ class LinearSelection(Model):
                  b=None, b_init=None, b_regularizer=None,
                  sw=None, sw_init=None,
                  sb=None, sb_init=None,
+                 input_select=False,
                  use_bias=True, dropout=0, layernorm=False):
         super().__init__(name)
 
@@ -895,10 +896,13 @@ class LinearSelection(Model):
         self.use_bias = use_bias
         self.dropout = dropout
         self.layernorm = layernorm
+        self.input_select = input_select
+
+        s_dims = selector_dims + (input_dims if input_select else 0)
 
         if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
         if b_init is None: b_init = init.Constant(0.0)
-        if sw_init is None: sw_init = init.Gaussian(fan_in=selector_dims)
+        if sw_init is None: sw_init = init.Gaussian(fan_in=s_dims)
         if sb_init is None: sb_init = init.Constant(0.0)
 
         self.param('w', (input_dims, output_dims*parallel_dims),
@@ -909,7 +913,7 @@ class LinearSelection(Model):
                        init_f=b_init, value=b)
             self.regularize(self._b, b_regularizer)
 
-        self.param('sw', (selector_dims, output_dims*parallel_dims),
+        self.param('sw', (s_dims, output_dims*parallel_dims),
                    init_f=sw_init)
         self.param('sb', (output_dims*parallel_dims,),
                    init_f=sb_init)
@@ -930,15 +934,31 @@ class LinearSelection(Model):
                                self.output_dims, self.parallel_dims))
 
         # Note that par might be a 3D or 4D tensor, while sel is always 3D
-        sel = T.dot(selector, self._sw) + self._sb.dimshuffle('x', 0)
-        sel = sel.reshape(
-                (sel.shape[0], self.output_dims, self.parallel_dims))
-        sel = softmax_3d(sel)
-
-        if sequence:
-            outputs = (par * sel.dimshuffle('x',0,1,2)).sum(axis=-1)
-        else:
+        if self.input_select and sequence:
+            # ...except if we condition on the input
+            selector = T.concatenate([
+                    inputs,
+                    T.repeat(selector.dimshuffle('x',0,1), inputs.shape[0],
+                             axis=0)],
+                axis=-1)
+            sel = T.dot(selector, self._sw) + self._sb
+            sel = sel.reshape(
+                    (sel.shape[0], sel.shape[1],
+                     self.output_dims, self.parallel_dims))
+            sel = softmax_4d(sel)
             outputs = (par * sel).sum(axis=-1)
+        else:
+            if self.input_select:
+                selector = T.concatenate([inputs, selector], axis=-1)
+            sel = T.dot(selector, self._sw) + self._sb
+            sel = sel.reshape(
+                    (sel.shape[0], self.output_dims, self.parallel_dims))
+            sel = softmax_3d(sel)
+            if sequence:
+                outputs = (par * sel.dimshuffle('x',0,1,2)).sum(axis=-1)
+            else:
+                outputs = (par * sel).sum(axis=-1)
+
         if self.layernorm: outputs = self.ln(outputs)
         if self.dropout: outputs = self.dropout(outputs)
         return outputs
