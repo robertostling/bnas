@@ -814,6 +814,228 @@ class Sequence(Model):
             return seqs
 
 
+# TODO: need to re-think how to handle attention in stacked models
+class StackedSequence(Model):
+    def __init__(self, name, gate_type, backwards, n_layers,
+                 input_dims, state_dims, *args,
+                 dropout=0, trainable_initial=False, offset=0,
+                 use_attention=False,
+                 layer_fixed_size=None, **kwargs):
+        super().__init__(name)
+        self.backwards = backwards
+        self.trainable_initial = trainable_initial
+        self.offset = offset
+        self.n_layers = n_layers
+        self.layer_fixed_size = layer_fixed_size
+        self._step_fun = None
+        self._attention_u_fun = None
+
+        self.add(Dropout('dropout', dropout))
+
+        self.gates = []
+        for layer in range(n_layers):
+            total_input_dims = state_dims
+            if layer == 0:
+                total_input_dims += input_dims
+            if layer_fixed_size is not None:
+                total_input_dims += layer_fixed_size[layer]
+            gate = gate_type(
+                'gate%d' % layer,
+                total_input_dims,
+                state_dims,
+                *args,
+                **kwargs)
+            self.add(gate)
+            self.gates.append(gate)
+            if self.trainable_initial:
+                for state in range(self.gate0.n_states):
+                    self.param('state_%d_%d_0' % (layer, state),
+                               (self.gate0.state_dims,),
+                               init_f=init.Gaussian(
+                                   fan_in=self.gate0.state_dims))
+
+    def step(self, inputs, inputs_mask, *args):
+        total_states = self.gate0.n_states*self.n_layers
+        layer_states_tm1 = [
+                args[layer*self.gate0.n_states:(layer+1)*self.gate0.n_states]
+                for layer in range(self.n_layers)]
+        n = total_states
+        h_mask = args[n]
+        n += 1
+        layer_fixed = None
+        if self.layer_fixed_size is not None:
+            layer_fixed = args[n:n+self.n_layers+1]
+            n += self.n_layers+1
+        non_sequences = args[n:]
+        layer_states_t = []
+
+        #states_tm1 = args[:self.gate.n_states]
+        #h_mask = args[self.gate.n_states]
+        #non_sequences = args[self.gate.n_states+1:]
+        # TODO: currently assume that dropout is applied only to states[0]
+        #       through h_mask (which is passed through non_sequences and
+        #       constant at each time step)
+
+        if self.gates[-1].use_attention:
+            raise NotImplementedError('Stacked RNN with attention')
+            # attended is the
+            #   src_sequence_length x batch_size x attention_dims
+            # matrix which we have attention on.
+            #
+            # attended_dot_u is the h_t-independent part of the final
+            # attention vectors, which is precomputed for efficiency.
+            #
+            # attention_mask is a binary mask over the valid elements of
+            # attended, which in practice is the same as the mask passed to
+            # the encoder that created attended. Size
+            #   src_sequence_length x batch_size
+            states_attention = self.gate(
+                    inputs,
+                    *((states_tm1[0] * h_mask.astype(theano.config.floatX),) +
+                      states_tm1[1:]),
+                    attended=non_sequences[0],
+                    attended_dot_u=non_sequences[1],
+                    attention_mask=non_sequences[2])
+            states_t = states_attention[:-1]
+            attention = states_attention[-1]
+            return tuple(T.switch(inputs_mask.dimshuffle(0, 'x'), s_t, s_tm1)
+                         for s_t, s_tm1 in zip(states_t, states_tm1)
+                         ) + (attention,)
+        else:
+            for layer in range(self.n_layers):
+                states_tm1 = layer_states_tm1[layer]
+                total_inputs = inputs if layer == 0 else layer_states_t[-1][0]
+                if layer_fixed is not None:
+                    total_inputs = T.concatenate(
+                            [total_inputs, layer_fixed[layer].repeat(
+                                inputs.shape[0], axis=0)],
+                            axis=-1)
+                states_t = getattr(self, 'gate%d' % layer)(
+                    total_inputs,
+                    *((states_tm1[0] * h_mask.astype(theano.config.floatX),) +
+                      states_tm1[1:]))
+                layer_states_t.append(states_t)
+            return tuple(
+                    T.switch(inputs_mask.dimshuffle(0, 'x'), s_t, s_tm1)
+                    for states_t, states_tm1 in zip(
+                        layer_states_t,
+                        layer_states_tm1)
+                    for s_t, s_tm1 in zip(states_t, states_tm1))
+            #states_t = self.gate(
+            #        inputs,
+            #        *((states_tm1[0] * h_mask.astype(theano.config.floatX),) +
+            #          states_tm1[1:]))
+            #return tuple(T.switch(inputs_mask.dimshuffle(0, 'x'), s_t, s_tm1)
+            #             for s_t, s_tm1 in zip(states_t, states_tm1))
+
+    def step_fun(self):
+        if self._step_fun is None:
+            inputs = T.matrix('inputs')
+            states_tm1 = [T.matrix('state_%d_%d_tm1' % (layer, state))
+                          for layer in range(self.n_layers)
+                          for state in range(self.gate0.n_states)]
+            if self.gates[-1].use_attention:
+                raise NotImplementedError('Stacked RNN with attention')
+                attended=T.tensor3('attended')
+                attended_dot_u=T.tensor3('attended_dot_u')
+                attention_mask=T.matrix('attention_mask')
+                self._step_fun = function(
+                        [inputs] + states_tm1 + [
+                            attended, attended_dot_u, attention_mask],
+                        self.step(*([inputs, T.ones(inputs.shape[:-1])] +
+                                    states_tm1 + [T.ones_like(states_tm1[0]),
+                                    attended, attended_dot_u,
+                                    attention_mask])))
+            else:
+                self._step_fun = function(
+                        [inputs] + states_tm1,
+                        self.step(*([inputs, T.ones(inputs.shape[:-1])] +
+                                  states_tm1 + [T.ones_like(states_tm1[0])])))
+        return self._step_fun
+
+    def attention_u_fun(self):
+        assert self.gates[-1].use_attention
+        if self._attention_u_fun is None:
+            attended = T.tensor3('attended')
+            self._attention_u_fun = function(
+                    [attended], self.gates[-1].attention_u(attended))
+        return self._attention_u_fun
+
+    def search(self, predict_fun, embeddings,
+               start_symbol, stop_symbol, max_length,
+               layer_states_0=None, attended=None, attention_mask=None,
+               layer_fixed=None,
+               beam_size=4):
+        if self.gates[-1].use_attention:
+            attended_dot_u = self.attention_u_fun()(attended)
+        if self.trainable_initial:
+            if layer_states_0 is None:
+                layer_states_0 = [
+                    getattr(self, '_state_%d_%d_0' % state).get_value()[None,:]
+                    for layer in range(self.n_layers)
+                    for state in range(self.gate0.n_states)]
+
+        def step(i, states, outputs, outputs_mask):
+            inputs = embeddings[outputs[-1]]
+            # TODO: need to give sizes of fixed arguments ...
+            # TODO: is this the best way to add extra arguments?
+            if layer_fixed is not None and layer_fixed[0] is not None:
+                # TODO: wasn't this buggy anyway? Why repeat(0, ...) ?
+                inputs = np.concatenate(
+                    [inputs, layer_fixed[0][None,:]],
+                    axis=-1)
+            if self.gates[-1].use_attention:
+                raise NotImplementedError('Stacked RNN with attention')
+                result = self.step_fun()(
+                    *([inputs] + states + [
+                    attended, attended_dot_u, attention_mask]))
+            else:
+                result = self.step_fun()(
+                    *([inputs] + states))
+            states = result[:self.n_layers*self.gate0.n_states]
+            # NOTE: state[0] of the last layer hard-coded
+            return states, predict_fun(
+                    states[(self.n_layers-1)*self.gate0.n_states])
+
+        return search.beam(
+                step, layer_states_0, layer_states_0[0][0].shape[0],
+                start_symbol, stop_symbol,
+                max_length, beam_size=beam_size)
+
+
+    def __call__(self, inputs, inputs_mask, layer_states_0=None,
+                 attended=None, attention_mask=None):
+        if self.trainable_initial:
+            batch_size = inputs.shape[1]
+            if layer_states_0 is None:
+                layer_states_0 = [
+                        expand_to_batch(getattr(self, '_state_%d_%d_0' % (
+                                            layer, state)),
+                                        batch_size)
+                        for layer in range(self.n_layers)
+                        for state in range(self.gate0.n_states)]
+        attention_info = []
+        if self.gates[-1].use_attention:
+            attention_info = [attended, self.gates[-1].attention_u(attended),
+                              attention_mask]
+        dropout_masks = [self.dropout.mask(layer_states_0[0].shape)]
+        seqs, _ = theano.scan(
+                fn=self.step,
+                go_backwards=self.backwards,
+                sequences=[{'input': inputs, 'taps': [self.offset]},
+                           {'input': inputs_mask, 'taps': [self.offset]}],
+                outputs_info=list(layer_states_0) + \
+                             [None]*(1 if self.gate0.use_attention else 0),
+                non_sequences=dropout_masks + attention_info + \
+                              sum([gate.parameters_list()
+                                   for gate in self.gates], []))
+        if self.backwards:
+            return tuple(seq[::-1] for seq in seqs)
+        else:
+            return seqs
+
+
+
 class Dropout(Model):
     """Dropout layer.
     
