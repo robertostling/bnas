@@ -87,8 +87,8 @@ class NMT(Model):
         return self.decoder.search(
                 self.predict_fun,
                 self._trg_embeddings.get_value(borrow=True),
-                self.config['trg_index']['<S>'],
-                self.config['trg_index']['</S>'],
+                self.config['trg_encoder']['<S>'],
+                self.config['trg_encoder']['</S>'],
                 max_length,
                 states_0=[h_0, c_0],
                 attended=attended,
