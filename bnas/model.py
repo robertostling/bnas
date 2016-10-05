@@ -588,12 +588,14 @@ class LSTMSequence(Model):
                             attended, attended_dot_u, attention_mask],
                         self.step(inputs, T.ones(inputs.shape[:-1]),
                                   h_tm1, c_tm1, T.ones_like(h_tm1),
-                                  attended, attended_dot_u, attention_mask))
+                                  attended, attended_dot_u, attention_mask),
+                        name='%s_step_fun'%self.name)
             else:
                 self._step_fun = function(
                         [inputs, h_tm1, c_tm1],
                         self.step(inputs, T.ones(inputs.shape[:-1]),
-                                  h_tm1, c_tm1, T.ones_like(h_tm1)))
+                                  h_tm1, c_tm1, T.ones_like(h_tm1)),
+                        name='%s_step_fun'%self.name)
         return self._step_fun
 
     def attention_u_fun(self):
@@ -601,7 +603,8 @@ class LSTMSequence(Model):
         if self._attention_u_fun is None:
             attended = T.tensor3('attended')
             self._attention_u_fun = function(
-                    [attended], self.gate.attention_u(attended))
+                    [attended], self.gate.attention_u(attended),
+                    name='%s_attention_u_fun'%self.name)
         return self._attention_u_fun
 
     def search(self, predict_fun, embeddings,
@@ -732,12 +735,14 @@ class Sequence(Model):
                         self.step(*([inputs, T.ones(inputs.shape[:-1])] +
                                     states_tm1 + [T.ones_like(states_tm1[0]),
                                     attended, attended_dot_u,
-                                    attention_mask])))
+                                    attention_mask])),
+                        name='%s_step_fun'%self.name)
             else:
                 self._step_fun = function(
                         [inputs] + states_tm1,
                         self.step(*([inputs, T.ones(inputs.shape[:-1])] +
-                                  states_tm1 + [T.ones_like(states_tm1[0])])))
+                                  states_tm1 + [T.ones_like(states_tm1[0])])),
+                        name='%s_step_fun'%self.name)
         return self._step_fun
 
     def attention_u_fun(self):
@@ -745,7 +750,8 @@ class Sequence(Model):
         if self._attention_u_fun is None:
             attended = T.tensor3('attended')
             self._attention_u_fun = function(
-                    [attended], self.gate.attention_u(attended))
+                    [attended], self.gate.attention_u(attended),
+                    name='%s_attention_u_fun'%self.name)
         return self._attention_u_fun
 
     def search(self, predict_fun, embeddings,
@@ -945,12 +951,14 @@ class StackedSequence(Model):
                         self.step(*([inputs, T.ones(inputs.shape[:-1])] +
                                     states_tm1 + [T.ones_like(states_tm1[0]),
                                     attended, attended_dot_u,
-                                    attention_mask])))
+                                    attention_mask])),
+                        name='%s_step_fun'%self.name)
             else:
                 self._step_fun = function(
                         [inputs] + states_tm1,
                         self.step(*([inputs, T.ones(inputs.shape[:-1])] +
-                                  states_tm1 + [T.ones_like(states_tm1[0])])))
+                                  states_tm1 + [T.ones_like(states_tm1[0])])),
+                        name='%s_step_fun'%self.name)
         return self._step_fun
 
     def attention_u_fun(self):
@@ -958,7 +966,8 @@ class StackedSequence(Model):
         if self._attention_u_fun is None:
             attended = T.tensor3('attended')
             self._attention_u_fun = function(
-                    [attended], self.gates[-1].attention_u(attended))
+                    [attended], self.gates[-1].attention_u(attended),
+                    name='%s_attention_u_fun'%self.name)
         return self._attention_u_fun
 
     def search(self, predict_fun, embeddings,
