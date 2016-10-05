@@ -17,7 +17,7 @@ from bnas.optimize import Adam, iterate_batches
 from bnas.init import Gaussian
 from bnas.utils import softmax_3d
 from bnas.loss import batch_sequence_crossentropy
-from bnas.text import encode_sequences, mask_sequences
+from bnas.text import TextEncoder
 from bnas.fun import function
 
 
@@ -27,17 +27,17 @@ class NMT(Model):
         self.config = config
 
         self.param('src_embeddings',
-                   (len(config['src_symbols']), config['src_embedding_dims']),
+                   (len(config['src_encoder']), config['src_embedding_dims']),
                    init_f=Gaussian(fan_in=config['src_embedding_dims']))
         self.param('trg_embeddings',
-                   (len(config['trg_symbols']), config['trg_embedding_dims']),
+                   (len(config['trg_encoder']), config['trg_embedding_dims']),
                    init_f=Gaussian(fan_in=config['trg_embedding_dims']))
         self.add(Linear('hidden',
-                        config['encoder_state_dims'],
+                        config['decoder_state_dims'],
                         config['trg_embedding_dims']))
         self.add(Linear('emission',
                         config['trg_embedding_dims'],
-                        len(config['trg_symbols']),
+                        len(config['trg_encoder']),
                         w=self._trg_embeddings.T))
         for prefix, backwards in (('fwd', False), ('back', True)):
             self.add(Sequence(
@@ -158,20 +158,16 @@ def main():
                         if min(lens) >= 2 and max(lens) <= max_length:
                             yield pair
             src_sents, trg_sents = list(zip(*read_pairs()))
-            src_symbols, src_index, src_encoded = encode_sequences(
-                    src_sents, max_n_symbols=10000)
-            trg_symbols, trg_index, trg_encoded = encode_sequences(
-                    trg_sents, max_n_symbols=10000)
-            bi_encoded = list(zip(src_encoded, trg_encoded))
+            src_encoder = TextEncoder(sequences=src_sents, max_vocab=10000)
+            trg_encoder = TextEncoder(sequences=trg_sents, max_vocab=10000)
+            sent_pairs = list(zip(src_sents, trg_sents))
             print('Read %d sentences, vocabulary size %d/%d' % (
-                len(bi_encoded), len(src_symbols), len(trg_symbols)),
+                len(sent_pairs), len(src_encoder), len(trg_encoder)),
                 flush=True)
             
         config = {
-            'src_symbols': src_symbols,
-            'trg_symbols': trg_symbols,
-            'src_index': src_index,
-            'trg_index': trg_index,
+            'src_encoder': src_encoder,
+            'trg_encoder': trg_encoder,
             'src_embedding_dims': 512,
             'trg_embedding_dims': 512,
             'encoder_dropout': 0.2,
@@ -203,21 +199,23 @@ def main():
                 model.xent(sym_inputs, sym_inputs_mask,
                            sym_outputs, sym_outputs_mask))
 
-        test_set = bi_encoded[:test_size]
-        train_set = bi_encoded[test_size:]
+        test_set = sent_pairs[:test_size]
+        train_set = sent_pairs[test_size:]
 
-        test_inputs, test_inputs_mask = mask_sequences(
-                [src for src,trg in test_set])
-        test_outputs, test_outputs_mask = mask_sequences(
-                [trg for src,trg in test_set])
+        test_src, test_trg = list(zip(*test_set))
+        test_inputs, test_inputs_mask = src_encoder.pad_sequences(test_src)
+        test_outputs, test_outputs_mask = trg_encoder.pad_sequences(test_trg)
 
+        start_time = time()
+        end_time = start_time + 24*3600
         batch_nr = 0
-        for epoch in range(n_epochs):
+
+        while time() < end_time:
             def pair_len(pair): return max(map(len, pair))
-            for bi_batch in iterate_batches(train_set, batch_size, pair_len):
-                src_batch, trg_batch = list(zip(*bi_batch))
-                inputs, inputs_mask = mask_sequences(src_batch)
-                outputs, outputs_mask = mask_sequences(trg_batch)
+            for batch_pairs in iterate_batches(train_set, 64, pair_len):
+                src_batch, trg_batch = list(zip(*batch_pairs))
+                inputs, inputs_mask = src_encoder.pad_sequences(src_batch)
+                outputs, outputs_mask = trg_encoder.pad_sequences(trg_batch)
                 t0 = time()
                 train_loss = optimizer.step(
                         inputs, inputs_mask, outputs, outputs_mask)
@@ -235,13 +233,15 @@ def main():
                             test_inputs.T,
                             pred[-1].T, pred_mask[-1].T, scores[-1].T):
                         print(' '.join(
-                            src_symbols[x] for x in src_sent.flatten()
+                            src_encoder.vocab[x] for x in src_sent.flatten()
                             if x > 1))
                         print('%.2f'%score, ' '.join(
-                            trg_symbols[x] for x, there
+                            trg_encoder.vocab[x] for x, there
                             in zip(sent.flatten(), sent_mask.flatten())
                             if bool(there)))
                         print('-'*72, flush=True)
+
+                if time() >= end_time(): break
 
         with open(args.model, 'wb') as f:
             pickle.dump(config, f)
