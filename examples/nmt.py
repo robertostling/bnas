@@ -241,7 +241,7 @@ def main():
                             if bool(there)))
                         print('-'*72, flush=True)
 
-                if time() >= end_time(): break
+                if time() >= end_time: break
 
         with open(args.model, 'wb') as f:
             pickle.dump(config, f)
