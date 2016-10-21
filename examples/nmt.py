@@ -184,7 +184,7 @@ def main():
         sym_inputs = T.lmatrix('inputs')
         sym_inputs_mask = T.bmatrix('inputs_mask')
         sym_outputs = T.lmatrix('outputs')
-        sym_outputs_mask = T.bmatrix('ouoututs_mask')
+        sym_outputs_mask = T.bmatrix('outputs_mask')
 
         optimizer = Adam(
                 model.parameters(),
