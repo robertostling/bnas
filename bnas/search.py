@@ -5,7 +5,8 @@ from collections import namedtuple
 import theano
 import numpy as np
 
-def greedy(step, states0, batch_size, start_symbol, stop_symbol, max_length):
+def greedy(step, states0, batch_size, start_symbol, stop_symbol, max_length,
+           randomize=False, temperature=1.0):
     """Greedy search algorithm.
 
     Parameters
@@ -49,7 +50,15 @@ def greedy(step, states0, batch_size, start_symbol, stop_symbol, max_length):
     states = states0
     for i in range(max_length-2):
         states, output_dists = step(i, states, output_seq, output_mask_seq)
-        output_seq.append(output_dists.argmax(axis=-1))
+        if randomize:
+            if temperature != 1.0:
+                output_dists = np.power(output_dists, 1.0/temperature)
+                output_dists /= output_dists.sum(axis=1)[:,None]
+            output_seq.append(np.array(
+                [np.random.choice(len(row), p=row)
+                 for row in output_dists]))
+        else:
+            output_seq.append(output_dists.argmax(axis=-1))
         output_mask_seq.append(
                 (output_seq[-2] != stop_symbol) * output_mask_seq[-1])
         active = (output_seq[-1] != stop_symbol) * output_mask_seq[-1]
