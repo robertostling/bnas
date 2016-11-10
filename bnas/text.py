@@ -27,13 +27,15 @@ class TextEncoder:
             if sequences is not None:
                 c = Counter(x for xs in sequences for x in xs)
                 if max_vocab is not None:
-                    self.vocab = special + tuple(
-                            s for s,_ in c.most_common(max_vocab))
+                    vocab_sorted = sorted(c.items(),
+                                          key=lambda t: (-t[1], t[0]))
+                    self.vocab = special + tuple(sorted(
+                        s for s,_ in vocab_sorted[:max_vocab]))
                 elif min_count is not None:
-                    self.vocab = special + tuple(
-                            s for s,n in c.items() if n >= min_count)
+                    self.vocab = special + tuple(sorted(
+                            s for s,n in c.items() if n >= min_count))
                 else:
-                    self.vocab = special + tuple(c.keys())
+                    self.vocab = special + tuple(sorted(c.keys()))
 
         self.index = {s:i for i,s in enumerate(self.vocab)}
 
