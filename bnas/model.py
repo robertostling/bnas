@@ -125,6 +125,10 @@ class Model:
         else:
             raise ValueError('Name tuple must not be empty!')
 
+    def parameter_count(self):
+        """Return the total number of parameters of the model."""
+        return sum(p.get_value(borrow=True).size for _,p in self.parameters())
+
     def param(self, name, dims, init_f=None,
               value=None, dtype=theano.config.floatX):
         """Create a new parameter, or share an existing one.
