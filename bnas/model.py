@@ -119,7 +119,7 @@ class Model:
         if not isinstance(name, tuple):
             raise TypeError('Expected tuple, got %s' % type(name))
         if len(name) == 1:
-            return self.param[name]
+            return self.params[name[0]]
         elif len(name) >= 2:
             return self.submodels[name[0]].parameter(name[1:])
         else:
