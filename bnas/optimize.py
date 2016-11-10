@@ -319,7 +319,7 @@ class Adam(Optimizer):
     Parameters
     ----------
     learning_rate : float, optional
-        Initial learning rate. Default is 0.01.
+        Initial learning rate. Default is 0.001.
     beta_1 : float, optional
         First moment decay rate, default: 0.9
     beta_1 : float, optional
