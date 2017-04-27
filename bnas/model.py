@@ -533,6 +533,199 @@ class LSTM(Model):
             return h_t, c_t
 
 
+class ContextGate(Model):
+    def __init__(self, name, input_dims, state_dims,
+                 w=None, w_init=None, w_regularizer=None,
+                 u=None, u_init=None, u_regularizer=None,
+                 b=None, b_init=None, b_regularizer=None,
+                 attention_dims=None, attended_dims=None,
+                 layernorm=False):
+        super().__init__(name)
+
+        assert layernorm in (False, 'ba1', 'ba2')
+        assert (attention_dims is None) == (attended_dims is None)
+
+        self.n_states = 2
+
+        self.input_dims = input_dims
+        self.state_dims = state_dims
+        self.layernorm = layernorm
+        self.attention_dims = attention_dims
+        self.attended_dims = attended_dims
+        self.use_attention = attention_dims is not None
+
+        wz_init = init.Gaussian(fan_in=input_dims)
+        uz_init = init.Gaussian(fan_in=state_dims)
+        bz_init = init.Constant(0.0)
+        cz_init = init.Gaussian(fan_in=attended_dims)
+        c_init = init.Gaussian(fan_in=attended_dims)
+
+        if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
+        if u_init is None: u_init = init.Orthogonal()
+        if b_init is None: b_init = init.Constant(0.0)
+
+        self.param('wz', (input_dims, state_dims), init_f=wz_init)
+        self.param('uz', (state_dims, state_dims), init_f=uz_init)
+        self.param('bz', (state_dims,), init_f=bz_init)
+        self.param('cz', (attended_dims, state_dims), init_f=cz_init)
+        self.param('w', (input_dims, state_dims), init_f=w_init, value=w)
+        self.param('c', (attended_dims, state_dims), init_f=c_init)
+        self.param('u', (state_dims, state_dims), init_f=u_init, value=u)
+        self.param('b', (state_dims,), init_f=b_init, value=b)
+
+        if self.use_attention:
+            self.add(Linear('attention_u', attended_dims, attention_dims))
+            self.param('attention_w', (state_dims, attention_dims),
+                       init_f=init.Gaussian(fan_in=state_dims))
+            self.param('attention_v', (attention_dims,),
+                       init_f=init.Gaussian(fan_in=attention_dims))
+            self.regularize(self._attention_w, w_regularizer)
+            if layernorm == 'ba1':
+                self.add(LayerNormalization('ln_a', (None, attention_dims)))
+
+        self.regularize(self._w, w_regularizer)
+        self.regularize(self._u, u_regularizer)
+        self.regularize(self._b, b_regularizer)
+
+        if layernorm:
+            raise NotImplementedError(
+                'Layer normalization not implemented for context gates')
+
+    def __call__(self, inputs, h_tm1,
+                 attended=None, attended_dot_u=None, attention_mask=None):
+        if self.use_attention:
+            # Non-precomputed part of the attention vector for this time step
+            #   _ x batch_size x attention_dims
+            h_dot_w = T.dot(h_tm1, self._attention_w)
+            if self.layernorm == 'ba1': h_dot_w = self.ln_a(h_dot_w)
+            h_dot_w = h_dot_w.dimshuffle('x',0,1)
+            # Attention vector, with distributions over the positions in
+            # attended. Elements that fall outside the sentence in each batch
+            # are set to zero.
+            #   sequence_length x batch_size
+            # Note that attention.T is returned
+            attention = softmax_masked(
+                    T.dot(
+                        T.tanh(attended_dot_u + h_dot_w),
+                        self._attention_v).T,
+                    attention_mask.T).T
+            # Compressed attended vector, weighted by the attention vector
+            #   batch_size x attended_dims
+            compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
+            # Append the compressed vector to the inputs and continue as usual
+            #inputs = T.concatenate([inputs, compressed], axis=1)
+        z = (T.dot(inputs, self._wz) + T.dot(h_tm1, self._uz) +
+             T.dot(compressed, self._cz) + self._bz.dimshuffle('x', 0))
+        z = T.nnet.sigmoid(z)
+        x = (T.dot(inputs, self._w) + T.dot(h_tm1, self._u) +
+             self._b.dimshuffle('x', 0))
+        cs = T.dot(compressed, self._c)
+        h_t = T.tanh(z*cs + (1-z)*x)
+
+        if self.use_attention:
+            return h_t, attention.T
+        else:
+            return h_t,
+
+
+class ContextGateSequence(Model):
+    def __init__(self, name, backwards, *args,
+                 dropout=0, trainable_initial=False, offset=0, **kwargs):
+        super().__init__(name)
+        self.backwards = backwards
+        self.trainable_initial = trainable_initial
+        self.offset = offset
+        self._step_fun = None
+        self._attention_u_fun = None
+
+        self.add(Dropout('dropout', dropout))
+        self.add(ContextGate('gate', *args, **kwargs))
+        if self.trainable_initial:
+            self.param('h_0', (self.gate.state_dims,),
+                       init_f=init.Gaussian(fan_in=self.gate.state_dims))
+
+    def step(self, inputs, inputs_mask, h_tm1, h_mask, *non_sequences):
+        if self.gate.use_attention:
+            # attended is the
+            #   src_sequence_length x batch_size x attention_dims
+            # matrix which we have attention on.
+            #
+            # attended_dot_u is the h_t-independent part of the final
+            # attention vectors, which is precomputed for efficiency.
+            #
+            # attention_mask is a binary mask over the valid elements of
+            # attended, which in practice is the same as the mask passed to
+            # the encoder that created attended. Size
+            #   src_sequence_length x batch_size
+            h_t, attention = self.gate(
+                    inputs, h_tm1 * h_mask.astype(theano.config.floatX),
+                    attended=non_sequences[0],
+                    attended_dot_u=non_sequences[1],
+                    attention_mask=non_sequences[2])
+            return (T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1),
+                    attention)
+        else:
+            h_t = self.gate(
+                    inputs, h_tm1 * h_mask.astype(theano.config.floatX))
+            return T.switch(inputs_mask.dimshuffle(0, 'x'), h_t, h_tm1)
+
+    def step_fun(self):
+        if self._step_fun is None:
+            inputs = T.matrix('inputs')
+            h_tm1 = T.matrix('h_tm1')
+            if self.gate.use_attention:
+                attended=T.tensor3('attended')
+                attended_dot_u=T.tensor3('attended_dot_u')
+                attention_mask=T.matrix('attention_mask')
+                self._step_fun = function(
+                        [inputs, h_tm1,
+                            attended, attended_dot_u, attention_mask],
+                        self.step(inputs, T.ones(inputs.shape[:-1]),
+                                  h_tm1, T.ones_like(h_tm1),
+                                  attended, attended_dot_u, attention_mask),
+                        name='%s_step_fun'%self.name)
+            else:
+                self._step_fun = function(
+                        [inputs, h_tm1],
+                        self.step(inputs, T.ones(inputs.shape[:-1]),
+                                  h_tm1, T.ones_like(h_tm1)),
+                        name='%s_step_fun'%self.name)
+        return self._step_fun
+
+    def attention_u_fun(self):
+        assert self.gate.use_attention
+        if self._attention_u_fun is None:
+            attended = T.tensor3('attended')
+            self._attention_u_fun = function(
+                    [attended], self.gate.attention_u(attended),
+                    name='%s_attention_u_fun'%self.name)
+        return self._attention_u_fun
+
+    def __call__(self, inputs, inputs_mask, h_0=None,
+                 attended=None, attention_mask=None):
+        if self.trainable_initial:
+            batch_size = inputs.shape[1]
+            if h_0 is None:
+                h_0 = expand_to_batch(self._h_0, batch_size)
+        attention_info = []
+        if self.gate.use_attention:
+            attention_info = [attended, self.gate.attention_u(attended),
+                              attention_mask]
+        dropout_masks = [self.dropout.mask(h_0.shape)]
+        seqs, _ = theano.scan(
+                fn=self.step,
+                go_backwards=self.backwards,
+                sequences=[{'input': inputs, 'taps': [self.offset]},
+                           {'input': inputs_mask, 'taps': [self.offset]}],
+                outputs_info=[h_0] + \
+                             [None]*(1 if self.gate.use_attention else 0),
+                non_sequences=dropout_masks + attention_info + \
+                              self.gate.parameters_list())
+        if self.backwards:
+            return tuple(seq[::-1] for seq in seqs)
+        else:
+            return seqs
+
 class LSTMSequence(Model):
     def __init__(self, name, backwards, *args,
                  dropout=0, trainable_initial=False, offset=0, **kwargs):
