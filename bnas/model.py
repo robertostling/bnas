@@ -238,13 +238,15 @@ class Model:
         parameters = dict(self.parameters())
         names = frozenset(data.keys()) & frozenset(parameters.keys())
         if not allow_incomplete and len(names) < len(parameters):
+            diff = sorted(frozenset(parameters.keys()) - names)
             raise ValueError(
                     'The following parameters are missing: %s' % ', '.join(
-                        sorted(frozenset(parameters.keys()) - names)))
+                        '.'.join(t) for t in diff))
         if not allow_unused and len(names) < len(data):
+            diff = sorted(frozenset(data.keys()) - names)
             raise ValueError(
                     'The following parameters are unused: %s' % ', '.join(
-                        sorted(frozenset(data.keys()) - names)))
+                        '.'.join(t) for t in diff))
         for name in names:
             value = data[name]
             old_value = parameters[name].get_value(borrow=True)
@@ -545,7 +547,7 @@ class ContextGate(Model):
         assert layernorm in (False, 'ba1', 'ba2')
         assert (attention_dims is None) == (attended_dims is None)
 
-        self.n_states = 2
+        self.n_states = 1
 
         self.input_dims = input_dims
         self.state_dims = state_dims
@@ -555,10 +557,11 @@ class ContextGate(Model):
         self.use_attention = attention_dims is not None
 
         wz_init = init.Gaussian(fan_in=input_dims)
-        uz_init = init.Gaussian(fan_in=state_dims)
+        uz_init = init.Orthogonal()
         bz_init = init.Constant(0.0)
         cz_init = init.Gaussian(fan_in=attended_dims)
         c_init = init.Gaussian(fan_in=attended_dims)
+        cb_init = init.Constant(0.0)
 
         if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
         if u_init is None: u_init = init.Orthogonal()
@@ -566,12 +569,14 @@ class ContextGate(Model):
 
         self.param('wz', (input_dims, state_dims), init_f=wz_init)
         self.param('uz', (state_dims, state_dims), init_f=uz_init)
-        self.param('bz', (state_dims,), init_f=bz_init)
         self.param('cz', (attended_dims, state_dims), init_f=cz_init)
+        self.param('bz', (state_dims,), init_f=bz_init)
+
         self.param('w', (input_dims, state_dims), init_f=w_init, value=w)
-        self.param('c', (attended_dims, state_dims), init_f=c_init)
         self.param('u', (state_dims, state_dims), init_f=u_init, value=u)
+        self.param('c', (attended_dims, state_dims), init_f=c_init)
         self.param('b', (state_dims,), init_f=b_init, value=b)
+        self.param('cb', (state_dims,), init_f=cb_init)
 
         if self.use_attention:
             self.add(Linear('attention_u', attended_dims, attention_dims))
@@ -612,14 +617,12 @@ class ContextGate(Model):
             # Compressed attended vector, weighted by the attention vector
             #   batch_size x attended_dims
             compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
-            # Append the compressed vector to the inputs and continue as usual
-            #inputs = T.concatenate([inputs, compressed], axis=1)
         z = (T.dot(inputs, self._wz) + T.dot(h_tm1, self._uz) +
              T.dot(compressed, self._cz) + self._bz.dimshuffle('x', 0))
         z = T.nnet.sigmoid(z)
         x = (T.dot(inputs, self._w) + T.dot(h_tm1, self._u) +
              self._b.dimshuffle('x', 0))
-        cs = T.dot(compressed, self._c)
+        cs = T.dot(compressed, self._c) + self._cb.dimshuffle('x', 0)
         h_t = T.tanh(z*cs + (1-z)*x)
 
         if self.use_attention:
