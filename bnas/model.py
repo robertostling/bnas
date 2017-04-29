@@ -443,16 +443,18 @@ class LSTM(Model):
                  u=None, u_init=None, u_regularizer=None,
                  b=None, b_init=None, b_regularizer=None,
                  attention_dims=None, attended_dims=None,
-                 layernorm=False):
+                 layernorm=False, contextgate=False):
         super().__init__(name)
 
         assert layernorm in (False, 'ba1', 'ba2')
         assert (attention_dims is None) == (attended_dims is None)
+        assert not (contextgate and (attention_dims is None))
 
         self.n_states = 2
 
         if attended_dims is not None:
-            input_dims += attended_dims
+            if not contextgate:
+                input_dims += attended_dims
 
         self.input_dims = input_dims
         self.state_dims = state_dims
@@ -460,6 +462,8 @@ class LSTM(Model):
         self.attention_dims = attention_dims
         self.attended_dims = attended_dims
         self.use_attention = attention_dims is not None
+        self.use_contextgate = contextgate
+
 
         if w_init is None: w_init = init.Gaussian(fan_in=input_dims)
 
@@ -469,9 +473,42 @@ class LSTM(Model):
         if b_init is None: b_init = init.Concatenated(
             [init.Constant(x) for x in [0.0, 1.0, 0.0, 0.0]])
 
-        self.param('w', (input_dims, state_dims*4), init_f=w_init, value=w)
-        self.param('u', (state_dims, state_dims*4), init_f=u_init, value=u)
-        self.param('b', (state_dims*4,), init_f=b_init, value=b)
+
+        if self.use_contextgate:
+            self.param('wzg', (input_dims, state_dims*2),
+                    init_f=init.Gaussian(fan_in=input_dims))
+            self.param('uzg', (state_dims, state_dims*2),
+                    init_f=init.Concatenated([init.Orthogonal()]*2, axis=1))
+            self.param('bzg', (state_dims*2,), init_f=init.Constant(0.0))
+            
+            self.param('czs', (attended_dims, state_dims*2),
+                    init_f=init.Gaussian(fan_in=attended_dims))
+
+            #self.param('wz', (input_dims, state_dims),
+            #        init_f=init.Gaussian(fan_in=input_dims))
+            #self.param('uz', (state_dims, state_dims),
+            #        init_f=init.Orthogonal())
+            #self.param('cz', (attended_dims, state_dims),
+            #        init_f=init.Gaussian(fan_in=attended_dims))
+            #self.param('bz', (state_dims,), init_f=init.Constant(0.0))
+
+            #self.param('wg', (input_dims, state_dims),
+            #        init_f=init.Gaussian(fan_in=input_dims))
+            #self.param('ug', (state_dims, state_dims),
+            #        init_f=init.Orthogonal())
+            #self.param('bg', (state_dims,), init_f=init.Constant(0.0))
+
+            #self.param('cs', (attended_dims, state_dims),
+            #        init_f=init.Gaussian(fan_in=attended_dims))
+            self.param('bs', (state_dims,), init_f=init.Constant(0.0))
+
+            self.param('w', (state_dims, state_dims*4), init_f=w_init, value=w)
+            self.param('u', (state_dims, state_dims*4), init_f=u_init, value=u)
+            self.param('b', (state_dims*4,), init_f=b_init, value=b)
+        else:
+            self.param('w', (input_dims, state_dims*4), init_f=w_init, value=w)
+            self.param('u', (state_dims, state_dims*4), init_f=u_init, value=u)
+            self.param('b', (state_dims*4,), init_f=b_init, value=b)
 
         if self.use_attention:
             self.add(Linear('attention_u', attended_dims, attention_dims))
@@ -515,7 +552,31 @@ class LSTM(Model):
             #   batch_size x attended_dims
             compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
             # Append the compressed vector to the inputs and continue as usual
-            inputs = T.concatenate([inputs, compressed], axis=1)
+            if not self.use_contextgate:
+                inputs = T.concatenate([inputs, compressed], axis=1)
+            else:
+                zg = (T.dot(inputs, self._wzg) + T.dot(h_tm1, self._uzg) +
+                      self._bzg.dimshuffle('x', 0))
+                zs = T.dot(compressed, self._czs)
+
+                def part(m,i):
+                    return m[:, i*self.state_dims:(i+1)*self.state_dims]
+
+                z = T.nnet.sigmoid(part(zg,0) + part(zs,0))
+                g = part(zg,1)
+                s = part(zs,1) + self._bs.dimshuffle('x', 0)
+
+                #z = (T.dot(inputs, self._wz) + T.dot(h_tm1, self._uz) +
+                #     T.dot(compressed, self._cz) + self._bz.dimshuffle('x', 0))
+                #z = T.nnet.sigmoid(z)
+
+                #g = (T.dot(inputs, self._wg) + T.dot(h_tm1, self._ug) +
+                #     self._bg.dimshuffle('x', 0))
+
+                #s = T.dot(compressed, self._cs) + self._bs.dimshuffle('x', 0)
+
+                inputs = z*s + (1-z)*g
+
         if self.layernorm == 'ba1':
             x = (self.ln_1(T.dot(inputs, self._w)) +
                  self.ln_2(T.dot(h_tm1, self._u)))
@@ -556,10 +617,8 @@ class ContextGate(Model):
         self.attended_dims = attended_dims
         self.use_attention = attention_dims is not None
 
-        wz_init = init.Gaussian(fan_in=input_dims)
-        uz_init = init.Orthogonal()
-        bz_init = init.Constant(0.0)
-        cz_init = init.Gaussian(fan_in=attended_dims)
+        assert self.use_attention
+
         c_init = init.Gaussian(fan_in=attended_dims)
         cb_init = init.Constant(0.0)
 
@@ -567,16 +626,42 @@ class ContextGate(Model):
         if u_init is None: u_init = init.Orthogonal()
         if b_init is None: b_init = init.Constant(0.0)
 
-        self.param('wz', (input_dims, state_dims), init_f=wz_init)
-        self.param('uz', (state_dims, state_dims), init_f=uz_init)
-        self.param('cz', (attended_dims, state_dims), init_f=cz_init)
-        self.param('bz', (state_dims,), init_f=bz_init)
+        #self.param('gwz', (state_dims, state_dims),
+        self.param('gwz', (state_dims+input_dims, state_dims),
+                   init_f=init.Gaussian(fan_in=state_dims))
+        self.param('guz', (state_dims, state_dims),
+                   init_f=init.Orthogonal())
+        self.param('gbz', (state_dims,), init_f=init.Constant(0.0))
+
+        #self.param('gwr', (state_dims, state_dims),
+        self.param('gwr', (state_dims+input_dims, state_dims),
+                   init_f=init.Gaussian(fan_in=state_dims))
+        self.param('gur', (state_dims, state_dims),
+                   init_f=init.Orthogonal())
+        self.param('gbr', (state_dims,), init_f=init.Constant(0.0))
+
+        #self.param('gwh', (state_dims, state_dims),
+        self.param('gwh', (state_dims+input_dims, state_dims),
+                   init_f=init.Gaussian(fan_in=state_dims))
+        self.param('guh', (state_dims, state_dims),
+                   init_f=init.Orthogonal())
+        self.param('gbh', (state_dims,), init_f=init.Constant(0.0))
+
+        """
+        self.param('wz', (input_dims, state_dims),
+                   init_f=init.Gaussian(fan_in=input_dims))
+        self.param('uz', (state_dims, state_dims),
+                   init_f=init.Orthogonal())
+        self.param('cz', (attended_dims, state_dims),
+                   init_f=init.Gaussian(fan_in=attended_dims))
+        self.param('bz', (state_dims,), init_f=init.Constant(0.0))
 
         self.param('w', (input_dims, state_dims), init_f=w_init, value=w)
         self.param('u', (state_dims, state_dims), init_f=u_init, value=u)
-        self.param('c', (attended_dims, state_dims), init_f=c_init)
         self.param('b', (state_dims,), init_f=b_init, value=b)
+        self.param('c', (attended_dims, state_dims), init_f=c_init)
         self.param('cb', (state_dims,), init_f=cb_init)
+        """
 
         if self.use_attention:
             self.add(Linear('attention_u', attended_dims, attention_dims))
@@ -588,9 +673,9 @@ class ContextGate(Model):
             if layernorm == 'ba1':
                 self.add(LayerNormalization('ln_a', (None, attention_dims)))
 
-        self.regularize(self._w, w_regularizer)
-        self.regularize(self._u, u_regularizer)
-        self.regularize(self._b, b_regularizer)
+        #self.regularize(self._w, w_regularizer)
+        #self.regularize(self._u, u_regularizer)
+        #self.regularize(self._b, b_regularizer)
 
         if layernorm:
             raise NotImplementedError(
@@ -598,32 +683,55 @@ class ContextGate(Model):
 
     def __call__(self, inputs, h_tm1,
                  attended=None, attended_dot_u=None, attention_mask=None):
-        if self.use_attention:
-            # Non-precomputed part of the attention vector for this time step
-            #   _ x batch_size x attention_dims
-            h_dot_w = T.dot(h_tm1, self._attention_w)
-            if self.layernorm == 'ba1': h_dot_w = self.ln_a(h_dot_w)
-            h_dot_w = h_dot_w.dimshuffle('x',0,1)
-            # Attention vector, with distributions over the positions in
-            # attended. Elements that fall outside the sentence in each batch
-            # are set to zero.
-            #   sequence_length x batch_size
-            # Note that attention.T is returned
-            attention = softmax_masked(
-                    T.dot(
-                        T.tanh(attended_dot_u + h_dot_w),
-                        self._attention_v).T,
-                    attention_mask.T).T
-            # Compressed attended vector, weighted by the attention vector
-            #   batch_size x attended_dims
-            compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
+        assert self.use_attention
+        # Non-precomputed part of the attention vector for this time step
+        #   _ x batch_size x attention_dims
+        h_dot_w = T.dot(h_tm1, self._attention_w)
+        if self.layernorm == 'ba1': h_dot_w = self.ln_a(h_dot_w)
+        h_dot_w = h_dot_w.dimshuffle('x',0,1)
+        # Attention vector, with distributions over the positions in
+        # attended. Elements that fall outside the sentence in each batch
+        # are set to zero.
+        #   sequence_length x batch_size
+        # Note that attention.T is returned
+        attention = softmax_masked(
+                T.dot(
+                    T.tanh(attended_dot_u + h_dot_w),
+                    self._attention_v).T,
+                attention_mask.T).T
+        # Compressed attended vector, weighted by the attention vector
+        #   batch_size x attended_dims
+        compressed = (attended * attention.dimshuffle(0,1,'x')).sum(axis=0)
+
+        """
         z = (T.dot(inputs, self._wz) + T.dot(h_tm1, self._uz) +
              T.dot(compressed, self._cz) + self._bz.dimshuffle('x', 0))
         z = T.nnet.sigmoid(z)
+
         x = (T.dot(inputs, self._w) + T.dot(h_tm1, self._u) +
              self._b.dimshuffle('x', 0))
+        x = T.tanh(x)
+
         cs = T.dot(compressed, self._c) + self._cb.dimshuffle('x', 0)
-        h_t = T.tanh(z*cs + (1-z)*x)
+        cs = T.tanh(cs)
+
+        xx = z*cs + (1-z)*x
+        """
+
+        # FIXME: test for plain GRU
+        xx = T.concatenate([inputs, compressed], axis=1)
+
+        gz = T.nnet.sigmoid(
+                T.dot(xx, self._gwz) + T.dot(h_tm1, self._guz) +
+                self._gbz.dimshuffle('x', 0))
+        gr = T.nnet.sigmoid(
+                T.dot(xx, self._gwr) + T.dot(h_tm1, self._gur) +
+                self._gbr.dimshuffle('x', 0))
+        gh = T.tanh(
+                T.dot(xx, self._gwh) + T.dot(gr * h_tm1, self._guh) +
+                self._gbh.dimshuffle('x', 0))
+
+        h_t = gz*h_tm1 + (1-gz)*gh
 
         if self.use_attention:
             return h_t, attention.T
